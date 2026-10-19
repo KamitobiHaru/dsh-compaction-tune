@@ -1,283 +1,147 @@
 # dsh-compaction-tune
 
-一个只做一件事的 DSH 补丁型 bundle：给 `standard` 预设做一份「压缩阈值可调」的副本
-（Loader 行 `preset-high-performance`、preset id `high-performance`，界面显示 `高性能`），并把它设为该 profile 的默认预设。
+给 DSH（DeepSeek Harness）的 `standard` 预设加一个**压缩更早、尾巴更小**的可选副本预设：
+preset id `high-performance`，选择器里显示 **「高性能」**。
 
-- 默认阈值 **0.4**：adapter 声明 contextWindow 的 40%。对 `opencode-go/deepseek-v4.1-flash`
-  （1,000,000 / maxTokens 384,000）就是 **400,000 token 触发**，压缩后逐字保留约 30,800 token。
-- 默认保留比例 **0.05**（旧的 DSH 内置默认是 0.16，在 1M 窗口上会留 98,560，见「怎么选保留比例」）。
-- 阈值与保留比例用环境变量随时改，**不需要重新安装**；改完重启 dsh 生效。
-- 想确认「到底会不会自己压缩」：把阈值调到 `0.001`（约 1,000 token），发一两轮就能看到自动压缩。
-- 原来的 `standard` 预设保持原样，可随时切回对照。
+默认在模型上下文 **40%** 处触发自动压缩，压缩后逐字保留约 **5%** 的消息预算。
 
-## 为什么是「副本 + 环境变量」
+- **不改动原版**：只新增一个预设行，`standard` 原样保留，随时切回对照
+- **装完即用**：默认就是 0.4 / 0.05，不需要任何额外配置
+- **可调**：阈值与保留比例用环境变量改，重启生效，**不需要重新安装**
+- **覆盖所有模型**：任何 provider 下、任何声明了 `contextWindow` 的模型自动适用，无需逐个登记
+- **跟得上上游**：自带 `verify`（自检）、`check`（上游漂移检测）、`sync`（按上游重新生成）
 
-DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的插件清单躺在
-`preset-standard.config.plugins` 里（不是可 patch 的 `group` 行），所以任何覆写都必须重述整份声明
-—— 这也正是 DSH 自己的配置编辑器保存时的写法。既然必须冻结一份清单，就把唯一需要反复调整的
-值改成 `!!js` 表达式从环境变量读取。
+## 工作原理
 
-表达式还会派生保留比例 `min(0.05, threshold / 2)`：`compaction-basic` 在**插件激活时**就断言
-`retainRatio < thresholdRatio`，所以 `0.001` 这种试验阈值必须让保留比例跟着一起缩到底，否则整个
-预设挂不上（启动直接失败）。
+DSH 的 Cordis 补丁里 `config` 是**整体替换、从不深合并**，而预设的插件清单位于
+`preset-standard.config.plugins`（不是可单独 patch 的 `group` 行）—— 所以任何覆写都必须重述整份声明。
+本 bundle 的做法是：逐字复制上游 `standard` 预设，只在 `compaction-basic` 一行上加一个 `!!js`
+表达式，该表达式在 boot 时读环境变量算出压缩策略。`scripts/verify.mjs` 会断言生成物**只比上游多这一处**。
+
+## 效果
+
+触发点 = `floor(min(contextWindow × 0.4, contextWindow − maxTokens − 65536))`；
+保留尾巴 = `min(0.05, 阈值 / 2) × (contextWindow − maxTokens)` 个 token（逐字保留，其余压成摘要）。
+
+| 路由 | contextWindow / maxTokens | 触发 | 逐字保留 |
+|---|---|---|---|
+| `opencode-go/deepseek-v4.1-flash` | 1,000,000 / 384,000 | 400,000 | 30,800 |
+| `opencode-go/mimo-v2.6-*`、`muse-spark-1.3-*` | 1,048,576 / 131,072 | 419,430 | 45,875 |
+| `command-code-goat/*`（未声明 maxTokens） | 1,000,000 / 1,048,576 | ≤ 比例项 | 同上 |
 
 ## 安装
 
-本机（仓库已在磁盘上，`link:` 安装，改仓库文件即可重载）：
+前置：可用的 DSH（生成时版本 `0.2.0-rc.2`），`dsh web` 能正常启动。
 
-    plugin_manager install_bundle   target=/data3/zsy/dsh-compaction-tune
+**方式一：命令行**
 
-其它设备（先推 GitHub 并打 tag）：
+    dsh plugin --profile web add github:KamitobiHaru/dsh-compaction-tune#v0.3.1
 
-    plugin_manager install_bundle   target=github:<user>/dsh-compaction-tune#v0.2.0
+**方式二：GUI** —— 左侧「插件」页面，安装同一个 spec。
 
-`install_bundle` 会 `pnpm add` 并把 bundle 追加到 `dsh.profile.bundles` 末尾，补丁层因此压在
-`dsh-web-app` 之上。补丁是热重载的：已存在的会话保留旧 revision，**新会话**才用新预设。
+**方式三：让 DSH 里的 agent 装** —— 用 `plugin_manager` 工具，`install_bundle`，target 填同一个 spec。
 
-> **装完请重启一次 `dsh web`。** 热重载足以让新会话拿到新预设，但实测「安装 bundle + 改
-> profile patch」这套组合热重载之后，正在运行的会话会掉光工具（工具面板为空，任何调用都返回
-> `unknown tool`），重启即恢复。直接重启比事后排查便宜得多。
+> **装完请重启一次 `dsh web`。** 补丁本身是热重载的（新会话即可生效），但实测「安装 bundle / 改
+> profile patch」之后，**正在运行的会话会掉光工具**（任何调用都返回 `unknown tool`），重启即恢复。
 
-## 分发给其它设备
+## 使用
 
-**采用「`standard` 与「高性能」两个预设都保留」的形式**：bundle 只 *新增* 一个预设行
-（preset id `high-performance`、显示名 `高性能`、描述「采用更激进的压缩策略，使得准确性更高。」），
-从不改动 `preset-standard`，所以原版随时可用、可对照。
+装完并重启后，预设选择器里会出现 **「高性能」**（描述：采用更激进的压缩策略，使得准确性更高。）。
+生效的默认预设 = `selectedDefault ?? default`：在新会话里选一次「高性能」，GUI 会把选择写回 profile
+patch，之后新会话默认用它。原版 `standard` 仍在选择器里，可随时对照。
 
-装好并重启后，GUI 的预设选择器会自动列出它 —— registry 的 roster 就是进程里所有
-`@deepseek-ai/dsh-agent-preset` 行，按 `order`、再按 id 排序，显示 `config.name ?? config.id`
-（[registry 的 list()](/data3/zsy/node-v24.18.0-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-agent-preset-registry/lib/index.js#L577-L588)）。
+### 调整阈值与保留比例
 
-一次性三步，之后不需要再配置：
+    cd <本 bundle 的仓库或安装目录>
+    node scripts/set-ratio.mjs 0.3                 # 只改触发比例，保留比例自动派生
+    node scripts/set-ratio.mjs 0.4 --retain 0.05   # 两个值都显式给
+    node scripts/set-ratio.mjs --show              # 当前值 + 本 profile 所有模型的触发/保留数
+    node scripts/set-ratio.mjs --unset             # 回到 bundle 默认 0.4 / 0.05
 
-```bash
-# ① 任意一台有仓库的机器上推送（仓库已 commit + tag v0.3.0，只差 remote）
-cd /data3/zsy/dsh-compaction-tune
-git remote add origin git@github.com:<you>/dsh-compaction-tune.git
-git push -u origin main --tags
+脚本写入 `$DSH_HOME/.env`；也可以直接用启动环境变量（优先级高于 `.env`）：
 
-# ② 每台设备安装（pin tag；profile 的 pnpm-lock.yaml 会记住解析到的 commit）
-plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.3.0
-# 等价 CLI：dsh plugin --profile web add github:<you>/dsh-compaction-tune#v0.3.0
-
-# ③ 重启一次 dsh web
-```
-
-**阈值不需要在每台设备上设置**：bundle 的默认就是 `0.4` / `0.05`（`retain = min(0.05, 0.4/2) = 0.05`）。
-环境变量只是临时试验用的旋钮，`.env` 里写 `0.4` 与不写等价。
-
-**唯一需要对齐的是「默认选中哪个预设」**：
-
-- profile patch 里的 `agent-preset-registry` 行（`default` / `selectedDefault`）在 bundle 层
-  **之后**应用，所以它优先。生效值 = `selectedDefault ?? default`。
-- 全新设备（profile patch 里没有这一行）→ bundle 的覆写生效 → 默认就是 `high-performance`。
-- 已有设备如果把 `selectedDefault` 选成了 `standard` → 默认是 `standard`，「高性能」仍留在选择器里
-  可选（本机就是这个状态）。
-- 想让多台设备完全一致，就在每台设备的选择器里选一次想要的预设（GUI 会把选择写回 profile patch），
-  或把 profile patch 里那一行同步过去。
-- ⚠️ **preset id 就是会话记录的东西**：改名（`standard-tuned` → `high-performance`）后，之前用旧
-  id 建的会话在恢复时找不到该定义，会拒绝恢复。用旧 id 跑过实验会话的话，别指望它们能接着用；
-  新建会话即可。
-
-升级 dsh 之后（唯一持续的负担）：
-
-```bash
-node scripts/check.mjs     # 上游 presets/standard.patch.yml 漂移就非 0 退出
-node scripts/sync.mjs      # 重新生成 cordis.patch.yml
-git diff                   # 看上游新增/改动了哪些工具与提示段
-git tag v0.2.1 && git push --tags
-# 各设备把 spec 换成 ...#v0.2.1 重装 + 重启
-```
-
-设备上没有仓库也能查漂移：github 安装会把整个仓库放进
-`~/.dsh/profiles/web/node_modules/dsh-compaction-tune/`，直接跑
-
-    node ~/.dsh/profiles/web/node_modules/dsh-compaction-tune/scripts/check.mjs
-
-### 需要发到 npm 吗？
-
-不需要，**放 GitHub 就够了**。`install_bundle` 支持 `github:<user>/<repo>#<tag>`，pnpm 会拉取仓库
-（解析到的 commit 记进 profile 的 `pnpm-lock.yaml`），DSH 在下载前还会做一次 GitHub 连通性预检。
-只有在这些情况下才值得发 npm：想让 `^1.0.0` 这类版本范围解析、想走私有 registry/内网镜像、或设备上
-没有 git 只有 registry 可达。
-
-注意点：
-
-- 仓库**公开**最省事；私有仓库也能装，但设备上的 git/pnpm 需要有凭据（SSH key 或 token）。
-- 用 **tag**（`#v0.2.0`）而不是 `#main`，否则每次装到的内容会变。
-- `package.json` 里的 `"private": true` 只挡 `npm publish`，不影响 git 安装；本 bundle 也没有
-  `prepare` 等 lifecycle 脚本，所以不会触发 build-script 审批。
-- 真发 npm 的话：包名要换成可用的（可能已被占），并去掉 `private`。
-
-## 新增模型需要做什么
-
-**bundle 侧零操作。** 压缩阈值不是按模型列表配置的：`compaction-basic` 在运行时用会话实际路由到的
-provider/model 去问适配器要 `contextWindow`，然后算
-`threshold = floor(min(contextWindow × ratio, contextWindow − 会话maxTokens − 65536))`。
-所以任何 provider、任何模型都自动覆盖，不需要写进本 bundle，也不需要重启（改的是 llm 配置）。
-
-唯一的前提是**适配器配置里声明 `contextWindow`**：
-
-- 声明了 → 该路由自动享受同一套比例；
-- 没声明 → `compaction-basic` 对该路由抛 `TargetPressureConfigError`（pre-step 处理器兜住，
-  只打一条告警，不中断对话）。
-
-建议**同时声明 `maxTokens`**：它决定预留的完成额度，也就是决定 `contextWindow − maxTokens − 65536`
-这个封顶会不会把触发点压得比比例项更低；不声明就只能靠会话请求头/适配器默认值，数值不确定。
-
-`scripts/set-ratio.mjs --show` 和 `scripts/verify.mjs` 末尾打印的表格会**读取你 profile 的
-`cordis.patch.yml` 并列出所有 provider 的所有模型**（`--profile <name>`、`--home <path>` 可覆盖），
-所以它是覆盖范围的诊断，而不是需要维护的清单。两类会显式提示：
-
-- `maxTokens not declared` → 该行只能给出比例项上界（`trigger <= …`）；
-- `declares no contextWindow` → 该路由在运行时会被压缩拒绝，需要去 llm 配置里补上。
-
-表格里的数字**只是推算/显示**：真正判定用的数字由 `compaction-basic` 在运行时用会话测量值与
-适配器声明计算，与这里的表无关。若将来要给个别路由**不同的比例**，需要扩展 bundle 表达式使用
-`compaction-basic` 的 `modelPolicies`（目前只给一个全局比例）。
-
-## 调阈值
-
-推荐写进 `$DSH_HOME/.env`（boot 时灌进 `process.env`），然后重启 dsh：
-
-    cd /data3/zsy/dsh-compaction-tune
-    node scripts/set-ratio.mjs 0.001                  # 阈值 0.001，保留比例自动派生 0.0005
-    node scripts/set-ratio.mjs 0.001 --retain 0.0005  # 两个值都显式给
-    node scripts/set-ratio.mjs --show                 # 只看当前值，并列出该 profile 所有 provider 的所有模型
-    node scripts/set-ratio.mjs --unset                # 恢复 bundle 默认 0.4 / 0.05
-
-`--show` 的模型清单来自 profile 自己的 `cordis.patch.yml`（`--profile <name>` / `--home <path>` /
-`--install <dsh 包目录>` 可覆盖）；它只是诊断显示，不参与运行时判定 —— 新增模型不需要改这里，
-详见「新增模型需要做什么」。
-
-也可以直接用启动环境变量（优先级高于 `.env`，无需改文件）：
-
-    HARNESS_COMPACTION_THRESHOLD_RATIO=0.001 dsh web
+    HARNESS_COMPACTION_THRESHOLD_RATIO=0.3 dsh web
 
 | 变量 | 默认 | 含义 |
 |---|---|---|
-| `HARNESS_COMPACTION_THRESHOLD_RATIO`（别名 `DSH_COMPACTION_THRESHOLD_RATIO`） | `0.4` | 触发比：`threshold = floor(min(contextWindow × ratio, contextWindow − maxTokens − 65536))`，当会话 token 估算 ≥ threshold 时在 `agent/pre-step` 自动压缩 |
-| `HARNESS_COMPACTION_RETAIN_RATIO`（别名同上） | `min(0.05, threshold / 2)` | 压缩后逐字保留的最近尾巴占 `contextWindow − maxTokens` 的比例 |
+| `HARNESS_COMPACTION_THRESHOLD_RATIO`（别名 `DSH_COMPACTION_THRESHOLD_RATIO`） | `0.4` | 触发比，会话测量值 ≥ 阈值时在 `agent/pre-step` 自动压缩 |
+| `HARNESS_COMPACTION_RETAIN_RATIO`（别名同上） | `min(0.05, 阈值 / 2)` | 压缩后逐字保留的最近尾巴占消息预算的比例 |
 
-注意：`.env` 里**不能**用 `DSH_*` 名字 —— DSH 把该前缀视为 bootstrap-only，会让启动直接报错；
-所以 `.env` 用 `HARNESS_*`，`DSH_*` 只作为命令行导出的别名（bundle 两个都读，`HARNESS_*` 优先）。
+两点注意：`.env` 里**不能**用 `DSH_*` 名字（DSH 视为 bootstrap-only，会让启动直接报错），所以 `.env`
+用 `HARNESS_*`，`DSH_*` 只作命令行别名；环境变量在 **boot 时读一次**，改完要重启 `dsh web`。
 
-## 怎么选保留比例
+### 怎么选保留比例
 
-`retainRatio` 是**压缩后逐字保留的最近尾巴**占消息预算（`contextWindow − maxTokens`）的比例；它不改变
-触发点（触发仍按 `trigger` 判），只决定压掉哪一段。同一比例在不同模型上的绝对值差很多，所以要按
-**绝对值**校：
+`retainRatio` 只决定"压缩后逐字留多少最近内容"，不改变触发点。同一个比例在不同模型上的绝对值差很多，
+按**绝对值**校更靠谱：
 
-| retainRatio | flash（预算 616k） | 占 400k trigger | mimo / muse（预算 917.5k） |
+| retainRatio | flash（预算 616k） | 占 400k 触发点 | mimo / muse（预算 917.5k） |
 |---|---|---|---|
 | 0.16（DSH 内置默认） | 98,560 | 24.6% | 146,800 |
 | 0.08 | 49,280 | 12.3% | 73,400 |
 | **0.05（本 bundle 默认）** | **30,800** | **7.7%** | **45,875** |
 | 0.03 | 18,480 | 4.6% | 27,525 |
 
-- **占窗口 5–20% 是主流区间**。0.16 在 1M 窗口上只占 9.9%，并不离谱；它的问题是**占 trigger 24.6%**
-  ——一次压缩只压掉约四分之三，压完还剩 11 万。
-- **DSH 的 0.16 是按 200k 级窗口校准的**：`0.16 × (200k − 32k) ≈ 27k`，正落在「30–50K」这个常见印象里。
-  你的窗口是它的 5 倍，`maxTokens` 又声明得很大（384k，占窗口 38%），同一个比例就被放大成 9.8 万。
-  注意 `retain` 的基数是 `contextWindow − maxTokens`，**`maxTokens` 越大，保留得反而越少**。
-- **经验规则：`retain ≲ trigger / 4`**，同时可压区间要远大于摘要（否则撞上「第三关」）。0.4/0.05 下可压
-  约 36 万，非常宽裕；压完稳态 ≈ 4 万（工具 5.2k + 系统 1.4k + 摘要 + 尾巴 30.8k），比 0.16 时小 2.7 倍。
+- **占窗口 5–20% 是主流区间**。0.16 在 1M 窗口上只占 9.9%，并不离谱；问题是它占触发点 24.6%，
+  一次压缩只压掉约四分之三，压完还剩 11 万。
+- **0.16 是按 200k 级窗口校准的**：`0.16 × (200k − 32k) ≈ 27k`。窗口越大、`maxTokens` 声明得越大
+  （保留基数是 `contextWindow − maxTokens`），这个比例算出来的绝对值就越大。
+- **经验规则：`retain ≲ 触发点 / 4`**，同时可压区间要远大于摘要。0.4/0.05 下可压约 36 万，压完稳态
+  ≈ 4 万（工具 5.2k + 系统 1.4k + 摘要 + 尾巴 30.8k），比 0.16 时小 2.7 倍。
 - 别低于 ~20k：更早的细节只剩摘要，长任务里会开始反复回读文件。
 
-参考（各家并不公布「保留多少 token」，多数用「保留最近 N 条消息」或直接整段换摘要）：Claude Code 在
-窗口 85% 提示、95% 强制压缩，边界是**保留最近约 10 条消息**（[第三方逆向整理](https://raw.githubusercontent.com/6551Team/claude-code-design-guide/refs/heads/main/part5/15-compact.md)）；
-Codex CLI 用 `model_auto_compact_token_limit`（默认按模型族给定，可写绝对值、0 关闭）加
-`tool_output_token_limit = 10000` 限制单条工具输出（[example-config.md](https://raw.githubusercontent.com/openai/codex/rust-v0.63.0/docs/example-config.md)）；
-OpenHands 的 `LLMSummarizingCondenser` 以**事件数**计（`max_size` 默认 120→240，另有 `keep_first`）
-（[Condenser 文档](https://docs.openhands.dev/sdk/arch/condenser)、[PR #12267](https://github.com/OpenHands/OpenHands/pull/12267)）；
-Cline 直接把整段历史换成摘要（[Auto Compact](https://docs.cline.bot/features/auto-compact)）。
+参考（各家并不公布"保留多少 token"）：Claude Code 在窗口 85% 提示、95% 强制压缩，边界是**保留最近约
+10 条消息**；Codex CLI 用 `model_auto_compact_token_limit`（默认按模型族给定）加
+`tool_output_token_limit = 10000`；OpenHands 的 `LLMSummarizingCondenser` 以事件数计；Cline 直接把整段
+历史换成摘要。
 
-想改成**绝对 token 数**（不管窗口都是固定 40k）也行：`compaction-basic` 原生支持 `retainTokens`
-（与 `retainRatio` 互斥），需要扩展本 bundle 的表达式来暴露它。
+## 自测：为什么"到了阈值却没压缩"
 
-## 自测：为什么"上下文到了阈值"却没压缩
+自动压缩在**每一步开始前**（`agent/pre-step`）判定，要**同时**过三关：
 
-自动压缩在**每一步开始前**（`agent/pre-step`）判定，且要**同时**过两关：
+1. **总量关**：`tokenMeter.measure(session).totalTokens >= 阈值`。这个 total **包含工具定义**，所以 UI
+   上的「上下文已用」就是它；工具定义约 5K 是一层永远压不掉的**地板**。
+2. **可压区间关**：保留尾巴必须停在系统提示之前。尾巴把整段对话吞完时，代码**静默返回**（不压缩、
+   不报错）。
+3. **摘要关**：摘要（含框架，约 800 token 起）必须**严格小于**被替换区间，否则放弃本次压缩，日志里
+   是 `compaction/end` 带 `error: summary is not smaller than the shadowed content (… >= …)`。
 
-1. **总量关**：`tokenMeter.measure(session).totalTokens >= threshold`。这个 total **包含工具定义**
-   （`estimateToolsTokens(header) + surface`），所以 UI 上「上下文已用」的数字就是它。工具定义约
-   5K —— 这是一层**永远压不掉的地板**。
-2. **可压缩关**：保留的尾巴必须停在系统提示之前（`selectCompactableRange`）。尾巴 =
-   `retainRatio × (contextWindow − maxTokens)` 个 token，逐字保留；系统提示所在的 surface 节点
-   永不参与压缩。
+想快速确认"会不会自己压缩"，用一个不太小的触发点 + 很小的尾巴：
 
-只过第一关、不过第二关时，代码**静默返回**（不压缩、不报错、不写日志）。这正是「10.9K 了却没动静」
-的成因：阈值 10,000 是被 5.2K 工具定义顶过去的，而当时的对话只有约 3K，小于尾巴
-（0.005 × 616,000 = 3,080）——尾巴把整段对话吞完了，没有可压的区间。
+    node scripts/set-ratio.mjs 0.01 --retain 0.0005   # 触发 10,000；尾巴仅 308 token
+    # 重启 dsh web，在新会话里聊几轮，然后看下一步是否自动出现摘要/检查点
 
-**推荐配方（阈值留在工具地板之上，只把尾巴调小）**
+成功时服务端 stderr 会有 `compaction (pressure): shadowed N surface nodes (seqs …, ~M tokens)`；
+也可以在会话日志里看 `compaction/start` / `compaction/end`。
 
-1. `node scripts/set-ratio.mjs 0.01 --retain 0.0005`   # 触发 10,000；尾巴仅 308 token
-2. 重启 `dsh web`
-3. 在新会话里聊几轮（让「上下文已用」超过 10,000）
-4. 下一步开始时应当**未经 `/compact`** 自动压缩：transcript 出现摘要/检查点、上下文用量回落；
-   服务端 stderr 出现 `compaction (pressure): shadowed N surface nodes …`
-5. 试完 `node scripts/set-ratio.mjs --unset` 再重启
+## 维护：DSH 升级之后
 
-这样两关都过，而且压缩后总量（工具 5.2K + 系统 1.4K + 摘要 + 尾巴）会落回阈值以下，只压一次就安静。
-反过来，把阈值压到工具地板（约 5–6K）以下，对话压无可压之后每步都会打印
-`compaction still above threshold after N attempts` 告警（被 pre-step 处理器兜住，不会中断对话，
-但很吵）。或者干脆让对话长大（让「对话消息」超过尾巴），再保持 `0.01`。
+    node scripts/check.mjs    # 上游 presets/standard.patch.yml 变了就非 0 退出
+    node scripts/sync.mjs     # 按新上游重新生成 cordis.patch.yml
+    node scripts/verify.mjs   # 断言「生成物 = 上游 + 恰好一处注入」
+    git diff                  # 看上游新增/改动了哪些工具与提示段
 
-### 第三关：摘要必须比被替换的内容小
-
-**触发成功不等于压缩成功。** 选定区间后摘要由模型生成，然后有一个硬性检查：摘要（含框架）的
-估算 token 必须**严格小于**被替换区间的 token，否则整个压缩被放弃：
-
-```
-compaction/start  {…}
-compaction/end    {error: "summary is not smaller than the shadowed content (780 estimated framed tokens >= 136)"}
-                                   ↑ 摘要                 ↑ 被替换区间
-```
-
-（[dsh-compaction-basic:600–601](/data3/zsy/node-v24.18.0-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-compaction-basic/lib/index.js#L600-L601)；失败只会打一条
-`step compaction failed: …; continuing the turn` 告警，对话继续，**surface 不变**。）
-
-所以尾巴调小并不是越小越好：尾巴太小 → 可压区间也小 → 摘要（框架开销约 800 token 起）比它还大 →
-被拒绝。要看到一次**成功**的压缩，可压区间要明显大于摘要——让「对话消息」长到几 K 之后再压，或者
-就等正常比例在真实会话里跑到 40 万（那时可压约 30 万，摘要几千，非常划算）。
-
-你可以在自己的会话日志里核对这三关：`compaction/start` / `compaction/end`（`error` 字段）、
-以及成功时的 `compaction (pressure): shadowed N surface nodes (seqs …, ~M tokens)`。
-
-## 校验与升级
-
-    node scripts/verify.mjs   # 生成物 == 生成器输出；等于上游 preset + 恰好一个注入属性；
-                              # 上游 dump/parse 往返无损；表达式对一张 env 表逐一求值，
-                              # 非法值必须抛错；最后打印各模型触发/保留 token 数
-    node scripts/check.mjs    # 上游 presets/standard.patch.yml 是否漂移（升级 dsh 后跑）
-    node scripts/sync.mjs     # 重新生成 cordis.patch.yml 与 upstream.json
-
-DSH 升级后的流程：`check` 报警 → `sync` 重新生成 → `git diff` 看上游到底改了什么 → 打新 tag →
-各设备把 spec 指向新 tag 重装。**冻结的代价**：这份副本不会自动获得上游新增的工具/提示段。
-
-要改表达式本身，请改 `scripts/lib.mjs` 里的 `EXPRESSION` 常量再 `sync`；`verify` 会逐字比对
-文件中的表达式与常量，手改生成物会被判失败。
+打新 tag 之后，各设备把安装 spec 换成新 tag 重装并重启。用 github 安装时整个仓库都会放进
+`~/.dsh/profiles/web/node_modules/dsh-compaction-tune/`，所以设备上没有仓库也能直接跑那里的脚本。
 
 ## 卸载
 
-    plugin_manager remove_bundle    target=dsh-compaction-tune
+    dsh plugin --profile web remove dsh-compaction-tune
 
-或手工把名字从 `dsh.profile.bundles` 移除，并恢复 profile patch 里 `agent-preset-registry`
-的 `default` / `selectedDefault`。
+或在 GUI 的「插件」页移除，然后重启。移除后预设恢复为 `standard`（bundle 的 registry 覆写随之消失）。
 
-## 注意
+## 已知限制
 
-- 该 bundle 会覆写 `agent-preset-registry` 的 `default` / `selectedDefault`。profile patch 在
-  bundle 层之后应用，所以 **profile patch 里若也写了这两项，以 profile patch 为准**；删掉 profile
-  patch 里那两行则回落到 bundle 的选择。
-- 选择器语义：**生效默认值是 `selectedDefault ?? default`**（`selectedDefault` 优先）。GUI 里切
-  预设时，registry 会把两个字段一起写回 profile patch 的 `agent-preset-registry` 行 —— `default`
-  取当时的继承值（装了本 bundle 就是 `high-performance`），`selectedDefault` 是你刚选的那个。因此
-  `default: standard-tuned` + `selectedDefault: standard` 是正常状态：生效的是 `standard`，
-  `high-performance` 仍留在选择器里可选，bundle 此刻完全惰性。
-- `dsh --dump-config` 只原样打印 `!!js` 表达式，不显示求值结果；要看生效值靠行为/日志，或用
-  `node scripts/set-ratio.mjs --show` 的推算表。
-- 本机是 `link:` 安装：**别删、别移动仓库目录**，否则 profile 里这条 bundle 解析失败。
-- 不要装进不加载 `dsh-agent-preset-registry` 的 profile（例如 `headless`）：补丁找不到目标行，
-  每次启动都会打印一条告警，且该预设不会被使用。
+- **副本会冻结**：覆写预设等于冻结那份插件清单，上游新增的工具/提示段要等 `sync` 重新生成才会进来。
+- **改 `cordis.patch.yml` 要配合重启**：服务运行时改 profile patch（或安装 bundle）会让正在运行的会话
+  掉光工具，重启即恢复。
+- **preset id 是会话记录的东西**：换 id 后，用旧 id 建的会话恢复会失败。
+- 本 bundle 会覆写 `agent-preset-registry` 的 `default` / `selectedDefault`；profile patch 在 bundle 层
+  **之后**应用，所以 profile patch 里也写了这两项时，以 profile patch 为准。
+- 不要装进不加载 `agent-preset-registry` 的 profile（例如 `headless`）：会每次启动打印补丁目标不存在的告警。
+- 若以 `link:` 方式安装（指向本地目录），别删除或移动该目录。
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。生成的 `cordis.patch.yml` 是 `@deepseek-ai/dsh-web-app` 所带 `standard`
+预设声明的逐字副本，由 `scripts/sync.mjs` 从本机安装中生成。
