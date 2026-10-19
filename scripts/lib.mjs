@@ -13,18 +13,19 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 /** Loader row id of the preset this bundle adds. */
-export const TUNED_PRESET_ROW_ID = 'preset-standard-tuned';
+export const TUNED_PRESET_ROW_ID = 'preset-high-performance';
 /** Loader row id of the shipped preset it derives from. */
 export const UPSTREAM_PRESET_ROW_ID = 'preset-standard';
-/** Preset id (inside the declaration) this bundle adds. */
-export const TUNED_PRESET_ID = 'standard-tuned';
+/** Preset id (inside the declaration) this bundle adds; sessions record this id. */
+export const TUNED_PRESET_ID = 'high-performance';
 /** Preset id of the shipped declaration. */
 export const UPSTREAM_PRESET_ID = 'standard';
 export const PRESET_PLUGIN_NAME = '@deepseek-ai/dsh-agent-preset';
 export const REGISTRY_ROW_ID = 'agent-preset-registry';
 export const COMPACTION_ROW_ID = 'compaction-basic';
-export const PRESET_DISPLAY_NAME = 'standard (compaction-tuned)';
-export const PRESET_DESCRIPTION = 'The shipped standard preset with the compaction threshold and retained tail read from HARNESS_COMPACTION_THRESHOLD_RATIO and HARNESS_COMPACTION_RETAIN_RATIO at boot.';
+/** Shown by the preset picker (`config.name ?? config.id`). */
+export const PRESET_DISPLAY_NAME = '高性能';
+export const PRESET_DESCRIPTION = '采用更激进的压缩策略，使得准确性更高。';
 export const PRESET_ORDER = 1;
 
 export const THRESHOLD_ENV = 'HARNESS_COMPACTION_THRESHOLD_RATIO';

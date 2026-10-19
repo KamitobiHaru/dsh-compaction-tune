@@ -1,7 +1,7 @@
 # dsh-compaction-tune - GENERATED FILE, do not hand-edit.
 #
-# Adds one @deepseek-ai/dsh-agent-preset row (`preset-standard-tuned`, preset id
-# `standard-tuned`): a verbatim copy of the shipped `standard` preset whose
+# Adds one @deepseek-ai/dsh-agent-preset row (`preset-high-performance`, preset id
+# `high-performance`): a verbatim copy of the shipped `standard` preset whose
 # `compaction-basic` row carries one `!!js` expression. That expression reads
 # HARNESS_COMPACTION_THRESHOLD_RATIO (or DSH_COMPACTION_THRESHOLD_RATIO) and
 # HARNESS_COMPACTION_RETAIN_RATIO (or DSH_COMPACTION_RETAIN_RATIO) at boot and returns the
@@ -17,12 +17,12 @@
 # Regenerate with `node scripts/sync.mjs`; detect upstream drift with
 # `node scripts/check.mjs`; prove the result with `node scripts/verify.mjs`.
 - insert:
-    - id: preset-standard-tuned
+    - id: preset-high-performance
       name: '@deepseek-ai/dsh-agent-preset'
       config:
-        id: standard-tuned
-        name: standard (compaction-tuned)
-        description: The shipped standard preset with the compaction threshold and retained tail read from HARNESS_COMPACTION_THRESHOLD_RATIO and HARNESS_COMPACTION_RETAIN_RATIO at boot.
+        id: high-performance
+        name: 高性能
+        description: 采用更激进的压缩策略，使得准确性更高。
         order: 1
         plugins:
           - id: persona
@@ -176,5 +176,5 @@
             disabled: true
 - id: agent-preset-registry
   config:
-    default: standard-tuned
-    selectedDefault: standard-tuned
+    default: high-performance
+    selectedDefault: high-performance

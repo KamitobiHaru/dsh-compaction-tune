@@ -1,7 +1,7 @@
 # dsh-compaction-tune
 
 一个只做一件事的 DSH 补丁型 bundle：给 `standard` 预设做一份「压缩阈值可调」的副本
-（Loader 行 `preset-standard-tuned`、preset id `standard-tuned`），并把它设为该 profile 的默认预设。
+（Loader 行 `preset-high-performance`、preset id `high-performance`，界面显示 `高性能`），并把它设为该 profile 的默认预设。
 
 - 默认阈值 **0.4**：adapter 声明 contextWindow 的 40%。对 `opencode-go/deepseek-v4.1-flash`
   （1,000,000 / maxTokens 384,000）就是 **400,000 token 触发**，压缩后逐字保留约 30,800 token。
@@ -40,20 +40,25 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
 
 ## 分发给其它设备
 
-**采用「`standard` 与 `standard-tuned` 两个预设都保留」的形式**：bundle 只 *新增* 一个预设行，
+**采用「`standard` 与「高性能」两个预设都保留」的形式**：bundle 只 *新增* 一个预设行
+（preset id `high-performance`、显示名 `高性能`、描述「采用更激进的压缩策略，使得准确性更高。」），
 从不改动 `preset-standard`，所以原版随时可用、可对照。
+
+装好并重启后，GUI 的预设选择器会自动列出它 —— registry 的 roster 就是进程里所有
+`@deepseek-ai/dsh-agent-preset` 行，按 `order`、再按 id 排序，显示 `config.name ?? config.id`
+（[registry 的 list()](/data3/zsy/node-v24.18.0-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-agent-preset-registry/lib/index.js#L577-L588)）。
 
 一次性三步，之后不需要再配置：
 
 ```bash
-# ① 任意一台有仓库的机器上推送（仓库已 commit + tag v0.2.0，只差 remote）
+# ① 任意一台有仓库的机器上推送（仓库已 commit + tag v0.3.0，只差 remote）
 cd /data3/zsy/dsh-compaction-tune
 git remote add origin git@github.com:<you>/dsh-compaction-tune.git
 git push -u origin main --tags
 
 # ② 每台设备安装（pin tag；profile 的 pnpm-lock.yaml 会记住解析到的 commit）
-plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.2.0
-# 等价 CLI：dsh plugin --profile web add github:<you>/dsh-compaction-tune#v0.2.0
+plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.3.0
+# 等价 CLI：dsh plugin --profile web add github:<you>/dsh-compaction-tune#v0.3.0
 
 # ③ 重启一次 dsh web
 ```
@@ -65,11 +70,14 @@ plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.2.0
 
 - profile patch 里的 `agent-preset-registry` 行（`default` / `selectedDefault`）在 bundle 层
   **之后**应用，所以它优先。生效值 = `selectedDefault ?? default`。
-- 全新设备（profile patch 里没有这一行）→ bundle 的覆写生效 → 默认就是 `standard-tuned`。
-- 已有设备如果把 `selectedDefault` 选成了 `standard` → 默认是 `standard`，`standard-tuned`
-  仍留在选择器里可选（本机就是这个状态）。
+- 全新设备（profile patch 里没有这一行）→ bundle 的覆写生效 → 默认就是 `high-performance`。
+- 已有设备如果把 `selectedDefault` 选成了 `standard` → 默认是 `standard`，「高性能」仍留在选择器里
+  可选（本机就是这个状态）。
 - 想让多台设备完全一致，就在每台设备的选择器里选一次想要的预设（GUI 会把选择写回 profile patch），
   或把 profile patch 里那一行同步过去。
+- ⚠️ **preset id 就是会话记录的东西**：改名（`standard-tuned` → `high-performance`）后，之前用旧
+  id 建的会话在恢复时找不到该定义，会拒绝恢复。用旧 id 跑过实验会话的话，别指望它们能接着用；
+  新建会话即可。
 
 升级 dsh 之后（唯一持续的负担）：
 
@@ -265,9 +273,9 @@ DSH 升级后的流程：`check` 报警 → `sync` 重新生成 → `git diff` �
   patch 里那两行则回落到 bundle 的选择。
 - 选择器语义：**生效默认值是 `selectedDefault ?? default`**（`selectedDefault` 优先）。GUI 里切
   预设时，registry 会把两个字段一起写回 profile patch 的 `agent-preset-registry` 行 —— `default`
-  取当时的继承值（装了本 bundle 就是 `standard-tuned`），`selectedDefault` 是你刚选的那个。因此
+  取当时的继承值（装了本 bundle 就是 `high-performance`），`selectedDefault` 是你刚选的那个。因此
   `default: standard-tuned` + `selectedDefault: standard` 是正常状态：生效的是 `standard`，
-  `standard-tuned` 仍留在选择器里可选，bundle 此刻完全惰性。
+  `high-performance` 仍留在选择器里可选，bundle 此刻完全惰性。
 - `dsh --dump-config` 只原样打印 `!!js` 表达式，不显示求值结果；要看生效值靠行为/日志，或用
   `node scripts/set-ratio.mjs --show` 的推算表。
 - 本机是 `link:` 安装：**别删、别移动仓库目录**，否则 profile 里这条 bundle 解析失败。
