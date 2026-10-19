@@ -32,6 +32,10 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
 `install_bundle` 会 `pnpm add` 并把 bundle 追加到 `dsh.profile.bundles` 末尾，补丁层因此压在
 `dsh-web-app` 之上。补丁是热重载的：已存在的会话保留旧 revision，**新会话**才用新预设。
 
+> **装完请重启一次 `dsh web`。** 热重载足以让新会话拿到新预设，但实测「安装 bundle + 改
+> profile patch」这套组合热重载之后，正在运行的会话会掉光工具（工具面板为空，任何调用都返回
+> `unknown tool`），重启即恢复。直接重启比事后排查便宜得多。
+
 ## 调阈值
 
 推荐写进 `$DSH_HOME/.env`（boot 时灌进 `process.env`），然后重启 dsh：
@@ -88,8 +92,13 @@ DSH 升级后的流程：`check` 报警 → `sync` 重新生成 → `git diff` �
 ## 注意
 
 - 该 bundle 会覆写 `agent-preset-registry` 的 `default` / `selectedDefault`。profile patch 在
-  bundle 层之后应用，所以 **profile patch 里若也写了这两项，以 profile patch 为准**（本机已把
-  profile patch 指向 `standard-tuned`）；删掉 profile patch 里那两行则回落到 bundle 的选择。
+  bundle 层之后应用，所以 **profile patch 里若也写了这两项，以 profile patch 为准**；删掉 profile
+  patch 里那两行则回落到 bundle 的选择。
+- 选择器语义：**生效默认值是 `selectedDefault ?? default`**（`selectedDefault` 优先）。GUI 里切
+  预设时，registry 会把两个字段一起写回 profile patch 的 `agent-preset-registry` 行 —— `default`
+  取当时的继承值（装了本 bundle 就是 `standard-tuned`），`selectedDefault` 是你刚选的那个。因此
+  `default: standard-tuned` + `selectedDefault: standard` 是正常状态：生效的是 `standard`，
+  `standard-tuned` 仍留在选择器里可选，bundle 此刻完全惰性。
 - `dsh --dump-config` 只原样打印 `!!js` 表达式，不显示求值结果；要看生效值靠行为/日志，或用
   `node scripts/set-ratio.mjs --show` 的推算表。
 - 本机是 `link:` 安装：**别删、别移动仓库目录**，否则 profile 里这条 bundle 解析失败。
