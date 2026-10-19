@@ -58,15 +58,34 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
 注意：`.env` 里**不能**用 `DSH_*` 名字 —— DSH 把该前缀视为 bootstrap-only，会让启动直接报错；
 所以 `.env` 用 `HARNESS_*`，`DSH_*` 只作为命令行导出的别名（bundle 两个都读，`HARNESS_*` 优先）。
 
-## 0.001 自测配方
+## 自测：为什么"上下文到了阈值"却没压缩
 
-1. `node scripts/set-ratio.mjs 0.001`
+自动压缩在**每一步开始前**（`agent/pre-step`）判定，且要**同时**过两关：
+
+1. **总量关**：`tokenMeter.measure(session).totalTokens >= threshold`。这个 total **包含工具定义**
+   （`estimateToolsTokens(header) + surface`），所以 UI 上「上下文已用」的数字就是它。工具定义约
+   5K —— 这是一层**永远压不掉的地板**。
+2. **可压缩关**：保留的尾巴必须停在系统提示之前（`selectCompactableRange`）。尾巴 =
+   `retainRatio × (contextWindow − maxTokens)` 个 token，逐字保留；系统提示所在的 surface 节点
+   永不参与压缩。
+
+只过第一关、不过第二关时，代码**静默返回**（不压缩、不报错、不写日志）。这正是「10.9K 了却没动静」
+的成因：阈值 10,000 是被 5.2K 工具定义顶过去的，而当时的对话只有约 3K，小于尾巴
+（0.005 × 616,000 = 3,080）——尾巴把整段对话吞完了，没有可压的区间。
+
+**推荐配方（阈值留在工具地板之上，只把尾巴调小）**
+
+1. `node scripts/set-ratio.mjs 0.01 --retain 0.0005`   # 触发 10,000；尾巴仅 308 token
 2. 重启 `dsh web`
-3. 开一个**新**会话，发一两轮（累计要超过 1,000 token，并且存在可压缩的历史节点 —— 只有单个大
-   `system` 消息时 `selectCompactableRange` 返回 `null`，会静默不压缩）
-4. 下一步开始时应该未经 `/compact` 就自动压缩：transcript 出现摘要/检查点、token 数回落；
-   服务端 stderr 会出现 `compaction (pressure): shadowed N surface nodes …`
+3. 在新会话里聊几轮（让「上下文已用」超过 10,000）
+4. 下一步开始时应当**未经 `/compact`** 自动压缩：transcript 出现摘要/检查点、上下文用量回落；
+   服务端 stderr 出现 `compaction (pressure): shadowed N surface nodes …`
 5. 试完 `node scripts/set-ratio.mjs --unset` 再重启
+
+这样两关都过，而且压缩后总量（工具 5.2K + 系统 1.4K + 摘要 + 尾巴）会落回阈值以下，只压一次就安静。
+反过来，把阈值压到工具地板（约 5–6K）以下，对话压无可压之后每步都会打印
+`compaction still above threshold after N attempts` 告警（被 pre-step 处理器兜住，不会中断对话，
+但很吵）。或者干脆让对话长大（让「对话消息」超过尾巴），再保持 `0.01`。
 
 ## 校验与升级
 
