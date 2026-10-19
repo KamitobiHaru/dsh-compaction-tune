@@ -1,6 +1,6 @@
 {
   "name": "dsh-compaction-tune",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "DSH bundle: a copy of the shipped standard agent preset whose compaction threshold is tunable through environment variables.",
   "dsh": {

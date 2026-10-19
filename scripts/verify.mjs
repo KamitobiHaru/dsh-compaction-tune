@@ -110,11 +110,11 @@ console.log('');
 console.log('environment knobs, evaluated through the Loader expression wrapper:');
 const cases = [
   { env: {}, expect: { thresholdRatio: L.DEFAULT_THRESHOLD_RATIO, retainRatio: L.DEFAULT_RETAIN_RATIO } },
-  { env: { [L.THRESHOLD_ENV]: '0.4' }, expect: { thresholdRatio: 0.4, retainRatio: 0.16 } },
+  { env: { [L.THRESHOLD_ENV]: '0.4' }, expect: { thresholdRatio: 0.4, retainRatio: L.DEFAULT_RETAIN_RATIO } },
   { env: { [L.THRESHOLD_ENV]: '0.001' }, expect: { thresholdRatio: 0.001, retainRatio: 0.0005 } },
-  { env: { [L.THRESHOLD_ENV]: '1' }, expect: { thresholdRatio: 1, retainRatio: 0.16 } },
+  { env: { [L.THRESHOLD_ENV]: '1' }, expect: { thresholdRatio: 1, retainRatio: L.DEFAULT_RETAIN_RATIO } },
   { env: { [L.THRESHOLD_ENV]: '0.4', [L.RETAIN_ENV]: '0.1' }, expect: { thresholdRatio: 0.4, retainRatio: 0.1 } },
-  { env: { [L.THRESHOLD_ENV_ALIAS]: '0.3' }, expect: { thresholdRatio: 0.3, retainRatio: 0.15 } }
+  { env: { [L.THRESHOLD_ENV_ALIAS]: '0.3' }, expect: { thresholdRatio: 0.3, retainRatio: L.DEFAULT_RETAIN_RATIO } }
 ];
 for (const { env, expect } of cases) {
   check(`${JSON.stringify(env)} -> ${JSON.stringify(expect)}`, () => {

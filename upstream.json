@@ -2,5 +2,5 @@
   "dshVersion": "0.2.0-rc.2",
   "upstreamPath": "/data3/zsy/node-v24.18.0-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-app/presets/standard.patch.yml",
   "upstreamSha256": "6cd2f197737fc94a45e487d0bb57869461dd6f392d45f6429b576e75d973eda8",
-  "generatedAt": "2026-10-19T03:37:28.020Z"
+  "generatedAt": "2026-10-19T05:20:25.257Z"
 }

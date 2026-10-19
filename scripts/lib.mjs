@@ -33,18 +33,26 @@ export const THRESHOLD_ENV_ALIAS = 'DSH_COMPACTION_THRESHOLD_RATIO';
 export const RETAIN_ENV_ALIAS = 'DSH_COMPACTION_RETAIN_RATIO';
 export const ENV_KEYS = [THRESHOLD_ENV, RETAIN_ENV, THRESHOLD_ENV_ALIAS, RETAIN_ENV_ALIAS];
 export const DEFAULT_THRESHOLD_RATIO = 0.4;
-export const DEFAULT_RETAIN_RATIO = 0.16;
+/**
+ * Retained verbatim tail as a fraction of the message budget
+ * (`contextWindow - maxTokens`). 0.05 keeps ~31K tokens on a 1M/384K route and
+ * ~46K on a 1M/131K route: ~8% of the 0.4 trigger, in the 30-50K band other
+ * agents effectively keep. The derived fallback `min(0.05, threshold/2)` still
+ * shrinks it for deliberately tiny test thresholds.
+ */
+export const DEFAULT_RETAIN_RATIO = 0.05;
 export const HEADROOM_TOKENS = 65536;
 
 /**
  * The single `!!js` expression this bundle injects into the preset's
- * `compaction-basic` row. Edit this constant and re-run `sync.mjs`; the
- * generated patch is checked against it by `verify.mjs`.
+ * `compaction-basic` row, generated from the two defaults above so the file
+ * cannot drift from them. Re-run `sync.mjs` after editing; `verify.mjs`
+ * checks the generated text against this constant.
  */
 export const EXPRESSION = `(() => {
   const env = process.env;
-  const thresholdRatio = Number(env.HARNESS_COMPACTION_THRESHOLD_RATIO ?? env.DSH_COMPACTION_THRESHOLD_RATIO ?? 0.4);
-  const retainRatio = Number(env.HARNESS_COMPACTION_RETAIN_RATIO ?? env.DSH_COMPACTION_RETAIN_RATIO ?? Math.min(0.16, thresholdRatio / 2));
+  const thresholdRatio = Number(env.HARNESS_COMPACTION_THRESHOLD_RATIO ?? env.DSH_COMPACTION_THRESHOLD_RATIO ?? ${DEFAULT_THRESHOLD_RATIO});
+  const retainRatio = Number(env.HARNESS_COMPACTION_RETAIN_RATIO ?? env.DSH_COMPACTION_RETAIN_RATIO ?? Math.min(${DEFAULT_RETAIN_RATIO}, thresholdRatio / 2));
   if (!(thresholdRatio > 0 && thresholdRatio <= 1)) {
     throw new Error('compaction threshold ratio must be in (0, 1], got ' + thresholdRatio + '; set HARNESS_COMPACTION_THRESHOLD_RATIO');
   }

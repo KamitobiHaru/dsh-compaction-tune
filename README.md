@@ -4,7 +4,8 @@
 （Loader 行 `preset-standard-tuned`、preset id `standard-tuned`），并把它设为该 profile 的默认预设。
 
 - 默认阈值 **0.4**：adapter 声明 contextWindow 的 40%。对 `opencode-go/deepseek-v4.1-flash`
-  （1,000,000 / maxTokens 384,000）就是 **400,000 token 触发**，压缩后保留约 98,560 token。
+  （1,000,000 / maxTokens 384,000）就是 **400,000 token 触发**，压缩后逐字保留约 30,800 token。
+- 默认保留比例 **0.05**（旧的 DSH 内置默认是 0.16，在 1M 窗口上会留 98,560，见「怎么选保留比例」）。
 - 阈值与保留比例用环境变量随时改，**不需要重新安装**；改完重启 dsh 生效。
 - 想确认「到底会不会自己压缩」：把阈值调到 `0.001`（约 1,000 token），发一两轮就能看到自动压缩。
 - 原来的 `standard` 预设保持原样，可随时切回对照。
@@ -16,8 +17,9 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
 —— 这也正是 DSH 自己的配置编辑器保存时的写法。既然必须冻结一份清单，就把唯一需要反复调整的
 值改成 `!!js` 表达式从环境变量读取。
 
-表达式还会派生保留比例 `min(0.16, threshold / 2)`：`compaction-basic` 在**插件激活时**就断言
-`retainRatio < thresholdRatio`，用默认的 0.16 配 0.001 会让整个预设挂不上（启动直接失败）。
+表达式还会派生保留比例 `min(0.05, threshold / 2)`：`compaction-basic` 在**插件激活时**就断言
+`retainRatio < thresholdRatio`，所以 `0.001` 这种试验阈值必须让保留比例跟着一起缩到底，否则整个
+预设挂不上（启动直接失败）。
 
 ## 安装
 
@@ -27,7 +29,7 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
 
 其它设备（先推 GitHub 并打 tag）：
 
-    plugin_manager install_bundle   target=github:<user>/dsh-compaction-tune#v0.1.0
+    plugin_manager install_bundle   target=github:<user>/dsh-compaction-tune#v0.2.0
 
 `install_bundle` 会 `pnpm add` 并把 bundle 追加到 `dsh.profile.bundles` 末尾，补丁层因此压在
 `dsh-web-app` 之上。补丁是热重载的：已存在的会话保留旧 revision，**新会话**才用新预设。
@@ -44,19 +46,19 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
 一次性三步，之后不需要再配置：
 
 ```bash
-# ① 任意一台有仓库的机器上推送（仓库已 commit + tag v0.1.0，只差 remote）
+# ① 任意一台有仓库的机器上推送（仓库已 commit + tag v0.2.0，只差 remote）
 cd /data3/zsy/dsh-compaction-tune
 git remote add origin git@github.com:<you>/dsh-compaction-tune.git
 git push -u origin main --tags
 
 # ② 每台设备安装（pin tag；profile 的 pnpm-lock.yaml 会记住解析到的 commit）
-plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.1.0
-# 等价 CLI：dsh plugin --profile web add github:<you>/dsh-compaction-tune#v0.1.0
+plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.2.0
+# 等价 CLI：dsh plugin --profile web add github:<you>/dsh-compaction-tune#v0.2.0
 
 # ③ 重启一次 dsh web
 ```
 
-**阈值不需要在每台设备上设置**：bundle 的默认就是 `0.4`（`retain = min(0.16, 0.4/2) = 0.16`）。
+**阈值不需要在每台设备上设置**：bundle 的默认就是 `0.4` / `0.05`（`retain = min(0.05, 0.4/2) = 0.05`）。
 环境变量只是临时试验用的旋钮，`.env` 里写 `0.4` 与不写等价。
 
 **唯一需要对齐的是「默认选中哪个预设」**：
@@ -75,14 +77,29 @@ plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.1.0
 node scripts/check.mjs     # 上游 presets/standard.patch.yml 漂移就非 0 退出
 node scripts/sync.mjs      # 重新生成 cordis.patch.yml
 git diff                   # 看上游新增/改动了哪些工具与提示段
-git tag v0.1.1 && git push --tags
-# 各设备把 spec 换成 ...#v0.1.1 重装 + 重启
+git tag v0.2.1 && git push --tags
+# 各设备把 spec 换成 ...#v0.2.1 重装 + 重启
 ```
 
 设备上没有仓库也能查漂移：github 安装会把整个仓库放进
 `~/.dsh/profiles/web/node_modules/dsh-compaction-tune/`，直接跑
 
     node ~/.dsh/profiles/web/node_modules/dsh-compaction-tune/scripts/check.mjs
+
+### 需要发到 npm 吗？
+
+不需要，**放 GitHub 就够了**。`install_bundle` 支持 `github:<user>/<repo>#<tag>`，pnpm 会拉取仓库
+（解析到的 commit 记进 profile 的 `pnpm-lock.yaml`），DSH 在下载前还会做一次 GitHub 连通性预检。
+只有在这些情况下才值得发 npm：想让 `^1.0.0` 这类版本范围解析、想走私有 registry/内网镜像、或设备上
+没有 git 只有 registry 可达。
+
+注意点：
+
+- 仓库**公开**最省事；私有仓库也能装，但设备上的 git/pnpm 需要有凭据（SSH key 或 token）。
+- 用 **tag**（`#v0.2.0`）而不是 `#main`，否则每次装到的内容会变。
+- `package.json` 里的 `"private": true` 只挡 `npm publish`，不影响 git 安装；本 bundle 也没有
+  `prepare` 等 lifecycle 脚本，所以不会触发 build-script 审批。
+- 真发 npm 的话：包名要换成可用的（可能已被占），并去掉 `private`。
 
 ## 新增模型需要做什么
 
@@ -119,7 +136,7 @@ provider/model 去问适配器要 `contextWindow`，然后算
     node scripts/set-ratio.mjs 0.001                  # 阈值 0.001，保留比例自动派生 0.0005
     node scripts/set-ratio.mjs 0.001 --retain 0.0005  # 两个值都显式给
     node scripts/set-ratio.mjs --show                 # 只看当前值，并列出该 profile 所有 provider 的所有模型
-    node scripts/set-ratio.mjs --unset                # 恢复 bundle 默认 0.4 / 0.16
+    node scripts/set-ratio.mjs --unset                # 恢复 bundle 默认 0.4 / 0.05
 
 `--show` 的模型清单来自 profile 自己的 `cordis.patch.yml`（`--profile <name>` / `--home <path>` /
 `--install <dsh 包目录>` 可覆盖）；它只是诊断显示，不参与运行时判定 —— 新增模型不需要改这里，
@@ -132,10 +149,43 @@ provider/model 去问适配器要 `contextWindow`，然后算
 | 变量 | 默认 | 含义 |
 |---|---|---|
 | `HARNESS_COMPACTION_THRESHOLD_RATIO`（别名 `DSH_COMPACTION_THRESHOLD_RATIO`） | `0.4` | 触发比：`threshold = floor(min(contextWindow × ratio, contextWindow − maxTokens − 65536))`，当会话 token 估算 ≥ threshold 时在 `agent/pre-step` 自动压缩 |
-| `HARNESS_COMPACTION_RETAIN_RATIO`（别名同上） | `min(0.16, threshold / 2)` | 压缩后逐字保留的最近尾巴占 `contextWindow − maxTokens` 的比例 |
+| `HARNESS_COMPACTION_RETAIN_RATIO`（别名同上） | `min(0.05, threshold / 2)` | 压缩后逐字保留的最近尾巴占 `contextWindow − maxTokens` 的比例 |
 
 注意：`.env` 里**不能**用 `DSH_*` 名字 —— DSH 把该前缀视为 bootstrap-only，会让启动直接报错；
 所以 `.env` 用 `HARNESS_*`，`DSH_*` 只作为命令行导出的别名（bundle 两个都读，`HARNESS_*` 优先）。
+
+## 怎么选保留比例
+
+`retainRatio` 是**压缩后逐字保留的最近尾巴**占消息预算（`contextWindow − maxTokens`）的比例；它不改变
+触发点（触发仍按 `trigger` 判），只决定压掉哪一段。同一比例在不同模型上的绝对值差很多，所以要按
+**绝对值**校：
+
+| retainRatio | flash（预算 616k） | 占 400k trigger | mimo / muse（预算 917.5k） |
+|---|---|---|---|
+| 0.16（DSH 内置默认） | 98,560 | 24.6% | 146,800 |
+| 0.08 | 49,280 | 12.3% | 73,400 |
+| **0.05（本 bundle 默认）** | **30,800** | **7.7%** | **45,875** |
+| 0.03 | 18,480 | 4.6% | 27,525 |
+
+- **占窗口 5–20% 是主流区间**。0.16 在 1M 窗口上只占 9.9%，并不离谱；它的问题是**占 trigger 24.6%**
+  ——一次压缩只压掉约四分之三，压完还剩 11 万。
+- **DSH 的 0.16 是按 200k 级窗口校准的**：`0.16 × (200k − 32k) ≈ 27k`，正落在「30–50K」这个常见印象里。
+  你的窗口是它的 5 倍，`maxTokens` 又声明得很大（384k，占窗口 38%），同一个比例就被放大成 9.8 万。
+  注意 `retain` 的基数是 `contextWindow − maxTokens`，**`maxTokens` 越大，保留得反而越少**。
+- **经验规则：`retain ≲ trigger / 4`**，同时可压区间要远大于摘要（否则撞上「第三关」）。0.4/0.05 下可压
+  约 36 万，非常宽裕；压完稳态 ≈ 4 万（工具 5.2k + 系统 1.4k + 摘要 + 尾巴 30.8k），比 0.16 时小 2.7 倍。
+- 别低于 ~20k：更早的细节只剩摘要，长任务里会开始反复回读文件。
+
+参考（各家并不公布「保留多少 token」，多数用「保留最近 N 条消息」或直接整段换摘要）：Claude Code 在
+窗口 85% 提示、95% 强制压缩，边界是**保留最近约 10 条消息**（[第三方逆向整理](https://raw.githubusercontent.com/6551Team/claude-code-design-guide/refs/heads/main/part5/15-compact.md)）；
+Codex CLI 用 `model_auto_compact_token_limit`（默认按模型族给定，可写绝对值、0 关闭）加
+`tool_output_token_limit = 10000` 限制单条工具输出（[example-config.md](https://raw.githubusercontent.com/openai/codex/rust-v0.63.0/docs/example-config.md)）；
+OpenHands 的 `LLMSummarizingCondenser` 以**事件数**计（`max_size` 默认 120→240，另有 `keep_first`）
+（[Condenser 文档](https://docs.openhands.dev/sdk/arch/condenser)、[PR #12267](https://github.com/OpenHands/OpenHands/pull/12267)）；
+Cline 直接把整段历史换成摘要（[Auto Compact](https://docs.cline.bot/features/auto-compact)）。
+
+想改成**绝对 token 数**（不管窗口都是固定 40k）也行：`compaction-basic` 原生支持 `retainTokens`
+（与 `retainRatio` 互斥），需要扩展本 bundle 的表达式来暴露它。
 
 ## 自测：为什么"上下文到了阈值"却没压缩
 
