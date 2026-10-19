@@ -35,7 +35,7 @@ DSH 的 Cordis 补丁里 `config` 是**整体替换、从不深合并**，而预
 
 **方式一：命令行**
 
-    dsh plugin --profile web add github:KamitobiHaru/dsh-compaction-tune#v0.3.2
+    dsh plugin --profile web add github:KamitobiHaru/dsh-compaction-tune#v0.3.3
 
 **方式二：GUI** —— 左侧「插件」页面，安装同一个 spec。
 
@@ -121,10 +121,11 @@ patch，之后新会话默认用它。原版 `standard` 仍在选择器里，可
     node scripts/verify.mjs   # 断言「生成物 = 上游 + 恰好一处注入」
     git diff                  # 看上游新增/改动了哪些工具与提示段
 
-打新 tag 之后，各设备把安装 spec 换成新 tag 重装并重启。
-
-发版约定：`package.json` 的 `version` 与 tag 同名（例如 `0.3.2` ↔ `v0.3.2`），每次改脚本或生成物就同步升一位。用 github 安装时整个仓库都会放进
+打新 tag 之后，各设备把安装 spec 换成新 tag 重装并重启。用 github 安装时整个仓库都会放进
 `~/.dsh/profiles/web/node_modules/dsh-compaction-tune/`，所以设备上没有仓库也能直接跑那里的脚本。
+
+发版约定：`package.json` 的 `version` 与 tag 同名（例如 `0.3.2` ↔ `v0.3.2`），每次改脚本或生成物
+就同步升一位。
 
 ## 卸载
 
