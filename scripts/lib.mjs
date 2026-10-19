@@ -7,7 +7,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -180,33 +180,101 @@ export function resolveDshHome(explicit) {
   return resolve(fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv : join(homedir(), '.dsh'));
 }
 
-/** Routes this profile declares; `reservedCompletionTokens` is the session request header maxTokens. */
-export const MODELS = [
+/**
+ * Sample routes, used only when no profile patch can be read. The printed
+ * table is diagnostics: compaction-basic resolves the real numbers at runtime
+ * per routed model, so these values never configure anything.
+ */
+export const FALLBACK_MODELS = [
   { label: 'opencode-go/deepseek-v4.1-flash', contextWindow: 1000000, reservedCompletionTokens: 384000 },
-  { label: 'mimo-v2.6-* , muse-spark-1.3-*', contextWindow: 1048576, reservedCompletionTokens: 131072 }
+  { label: 'opencode-go/mimo-v2.6-flash', contextWindow: 1048576, reservedCompletionTokens: 131072 }
 ];
 
-/** Mirror of `@deepseek-ai/dsh-compaction-basic` `resolveCompactSpec`. */
+/**
+ * Every model declared by one profile's own patch layer
+ * (`$DSH_HOME/profiles/<name>/cordis.patch.yml`), across all providers, so the
+ * printed table and the coverage warnings describe what is actually routed
+ * rather than a hardcoded sample.
+ * @param options - profile name, harness home, and dsh installation for the YAML dialect.
+ * @returns the declared routes, the declarations missing `contextWindow`, and where they came from.
+ */
+export function collectProfileModels(options = {}) {
+  const file = join(resolveDshHome(options.home), 'profiles', options.profile ?? 'web', 'cordis.patch.yml');
+  if (!existsSync(file)) return { file, models: [], missing: [], note: `no profile patch at ${file}` };
+  let entries;
+  try {
+    const tools = loadDshTools(options.installDir ?? resolveInstallDir());
+    entries = readEntryList(tools, file);
+  } catch (error) {
+    return { file, models: [], missing: [], note: `cannot read the profile patch: ${error.message}` };
+  }
+  const models = [];
+  const missing = [];
+  const visit = (rows) => {
+    for (const row of rows ?? []) {
+      const providers = row?.config?.providers;
+      if (providers !== null && typeof providers === 'object') {
+        for (const [provider, providerConfig] of Object.entries(providers)) {
+          for (const model of providerConfig?.models ?? []) {
+            const label = `${provider}/${model?.id ?? '?'}`;
+            if (typeof model?.contextWindow !== 'number') {
+              missing.push({ label, reason: 'declares no contextWindow, so compaction throws TargetPressureConfigError on this route' });
+              continue;
+            }
+            models.push({
+              label,
+              contextWindow: model.contextWindow,
+              reservedCompletionTokens: typeof model.maxTokens === 'number' ? model.maxTokens : undefined
+            });
+          }
+        }
+      }
+      if (Array.isArray(row?.config)) visit(row.config);
+      if (Array.isArray(row?.insert)) visit(row.insert);
+    }
+  };
+  visit(entries);
+  return { file, models, missing };
+}
+
+/**
+ * Mirror of `@deepseek-ai/dsh-compaction-basic` `resolveCompactSpec`.
+ * `reservedCompletionTokens` is the session request header maxTokens, so a
+ * model that declares none can only be bounded by the ratio term.
+ */
 export function compactSpec(model, thresholdRatio, retainRatio) {
+  const ratioTerm = model.contextWindow * thresholdRatio;
+  if (model.reservedCompletionTokens === undefined) {
+    return { thresholdTokens: Math.floor(ratioTerm), binding: 'ratio term only; maxTokens not declared, so the headroom cap is unknown' };
+  }
   const messageBudgetTokens = model.contextWindow - model.reservedCompletionTokens;
   const pressureBudgetTokens = messageBudgetTokens - HEADROOM_TOKENS;
-  if (pressureBudgetTokens <= 0) return { error: 'pressure budget <= 0 (TargetPressureConfigError)' };
-  const ratioTerm = model.contextWindow * thresholdRatio;
+  if (pressureBudgetTokens <= 0) {
+    return { error: `pressure budget <= 0 (${model.contextWindow} - ${model.reservedCompletionTokens} - ${HEADROOM_TOKENS}); TargetPressureConfigError at runtime` };
+  }
   const thresholdTokens = Math.floor(Math.min(ratioTerm, pressureBudgetTokens));
   const retainTokens = Math.floor(messageBudgetTokens * retainRatio);
-  if (retainTokens >= thresholdTokens) return { error: `retainTokens ${retainTokens} >= thresholdTokens ${thresholdTokens}` };
+  if (retainTokens >= thresholdTokens) {
+    return { error: `retainTokens ${retainTokens} >= thresholdTokens ${thresholdTokens}; compaction-basic refuses this policy at activation` };
+  }
   return { thresholdTokens, retainTokens, binding: ratioTerm <= pressureBudgetTokens ? 'ratio' : 'headroom cap' };
 }
 
-export function formatSpecTable(cases) {
+export function formatSpecTable(cases, models = FALLBACK_MODELS) {
+  if (models.length === 0) return '  (no models)';
   const lines = [];
-  for (const model of MODELS) {
-    lines.push(`  ${model.label}  (contextWindow ${model.contextWindow}, reserved completion ${model.reservedCompletionTokens})`);
+  for (const model of models) {
+    const declared = model.reservedCompletionTokens === undefined
+      ? 'maxTokens not declared'
+      : `maxTokens ${model.reservedCompletionTokens}`;
+    lines.push(`  ${model.label}  (contextWindow ${model.contextWindow}, ${declared})`);
     for (const [label, thresholdRatio, retainRatio] of cases) {
       const spec = compactSpec(model, thresholdRatio, retainRatio);
-      const detail = spec.error === undefined
-        ? `trigger ${spec.thresholdTokens} tokens, retain ${spec.retainTokens} tokens (${spec.binding})`
-        : spec.error;
+      const detail = spec.error !== undefined
+        ? spec.error
+        : spec.retainTokens === undefined
+          ? `trigger <= ${spec.thresholdTokens} tokens (${spec.binding})`
+          : `trigger ${spec.thresholdTokens} tokens, retain ${spec.retainTokens} tokens (${spec.binding})`;
       lines.push(`    ${label.padEnd(26)} ratio ${String(thresholdRatio).padEnd(7)} retain ${String(retainRatio).padEnd(8)} -> ${detail}`);
     }
   }

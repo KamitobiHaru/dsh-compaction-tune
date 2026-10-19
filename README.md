@@ -36,6 +36,81 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
 > profile patch」这套组合热重载之后，正在运行的会话会掉光工具（工具面板为空，任何调用都返回
 > `unknown tool`），重启即恢复。直接重启比事后排查便宜得多。
 
+## 分发给其它设备
+
+**采用「`standard` 与 `standard-tuned` 两个预设都保留」的形式**：bundle 只 *新增* 一个预设行，
+从不改动 `preset-standard`，所以原版随时可用、可对照。
+
+一次性三步，之后不需要再配置：
+
+```bash
+# ① 任意一台有仓库的机器上推送（仓库已 commit + tag v0.1.0，只差 remote）
+cd /data3/zsy/dsh-compaction-tune
+git remote add origin git@github.com:<you>/dsh-compaction-tune.git
+git push -u origin main --tags
+
+# ② 每台设备安装（pin tag；profile 的 pnpm-lock.yaml 会记住解析到的 commit）
+plugin_manager install_bundle  target=github:<you>/dsh-compaction-tune#v0.1.0
+# 等价 CLI：dsh plugin --profile web add github:<you>/dsh-compaction-tune#v0.1.0
+
+# ③ 重启一次 dsh web
+```
+
+**阈值不需要在每台设备上设置**：bundle 的默认就是 `0.4`（`retain = min(0.16, 0.4/2) = 0.16`）。
+环境变量只是临时试验用的旋钮，`.env` 里写 `0.4` 与不写等价。
+
+**唯一需要对齐的是「默认选中哪个预设」**：
+
+- profile patch 里的 `agent-preset-registry` 行（`default` / `selectedDefault`）在 bundle 层
+  **之后**应用，所以它优先。生效值 = `selectedDefault ?? default`。
+- 全新设备（profile patch 里没有这一行）→ bundle 的覆写生效 → 默认就是 `standard-tuned`。
+- 已有设备如果把 `selectedDefault` 选成了 `standard` → 默认是 `standard`，`standard-tuned`
+  仍留在选择器里可选（本机就是这个状态）。
+- 想让多台设备完全一致，就在每台设备的选择器里选一次想要的预设（GUI 会把选择写回 profile patch），
+  或把 profile patch 里那一行同步过去。
+
+升级 dsh 之后（唯一持续的负担）：
+
+```bash
+node scripts/check.mjs     # 上游 presets/standard.patch.yml 漂移就非 0 退出
+node scripts/sync.mjs      # 重新生成 cordis.patch.yml
+git diff                   # 看上游新增/改动了哪些工具与提示段
+git tag v0.1.1 && git push --tags
+# 各设备把 spec 换成 ...#v0.1.1 重装 + 重启
+```
+
+设备上没有仓库也能查漂移：github 安装会把整个仓库放进
+`~/.dsh/profiles/web/node_modules/dsh-compaction-tune/`，直接跑
+
+    node ~/.dsh/profiles/web/node_modules/dsh-compaction-tune/scripts/check.mjs
+
+## 新增模型需要做什么
+
+**bundle 侧零操作。** 压缩阈值不是按模型列表配置的：`compaction-basic` 在运行时用会话实际路由到的
+provider/model 去问适配器要 `contextWindow`，然后算
+`threshold = floor(min(contextWindow × ratio, contextWindow − 会话maxTokens − 65536))`。
+所以任何 provider、任何模型都自动覆盖，不需要写进本 bundle，也不需要重启（改的是 llm 配置）。
+
+唯一的前提是**适配器配置里声明 `contextWindow`**：
+
+- 声明了 → 该路由自动享受同一套比例；
+- 没声明 → `compaction-basic` 对该路由抛 `TargetPressureConfigError`（pre-step 处理器兜住，
+  只打一条告警，不中断对话）。
+
+建议**同时声明 `maxTokens`**：它决定预留的完成额度，也就是决定 `contextWindow − maxTokens − 65536`
+这个封顶会不会把触发点压得比比例项更低；不声明就只能靠会话请求头/适配器默认值，数值不确定。
+
+`scripts/set-ratio.mjs --show` 和 `scripts/verify.mjs` 末尾打印的表格会**读取你 profile 的
+`cordis.patch.yml` 并列出所有 provider 的所有模型**（`--profile <name>`、`--home <path>` 可覆盖），
+所以它是覆盖范围的诊断，而不是需要维护的清单。两类会显式提示：
+
+- `maxTokens not declared` → 该行只能给出比例项上界（`trigger <= …`）；
+- `declares no contextWindow` → 该路由在运行时会被压缩拒绝，需要去 llm 配置里补上。
+
+表格里的数字**只是推算/显示**：真正判定用的数字由 `compaction-basic` 在运行时用会话测量值与
+适配器声明计算，与这里的表无关。若将来要给个别路由**不同的比例**，需要扩展 bundle 表达式使用
+`compaction-basic` 的 `modelPolicies`（目前只给一个全局比例）。
+
 ## 调阈值
 
 推荐写进 `$DSH_HOME/.env`（boot 时灌进 `process.env`），然后重启 dsh：
@@ -43,8 +118,12 @@ DSH 的补丁机制里 `config` 是整体替换、从不深合并，而预设的
     cd /data3/zsy/dsh-compaction-tune
     node scripts/set-ratio.mjs 0.001                  # 阈值 0.001，保留比例自动派生 0.0005
     node scripts/set-ratio.mjs 0.001 --retain 0.0005  # 两个值都显式给
-    node scripts/set-ratio.mjs --show                 # 只看当前值与推算出的触发 token 数
+    node scripts/set-ratio.mjs --show                 # 只看当前值，并列出该 profile 所有 provider 的所有模型
     node scripts/set-ratio.mjs --unset                # 恢复 bundle 默认 0.4 / 0.16
+
+`--show` 的模型清单来自 profile 自己的 `cordis.patch.yml`（`--profile <name>` / `--home <path>` /
+`--install <dsh 包目录>` 可覆盖）；它只是诊断显示，不参与运行时判定 —— 新增模型不需要改这里，
+详见「新增模型需要做什么」。
 
 也可以直接用启动环境变量（优先级高于 `.env`，无需改文件）：
 

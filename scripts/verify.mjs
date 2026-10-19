@@ -145,11 +145,15 @@ check('an explicit retain at the threshold is refused', () => {
 
 console.log('');
 console.log('effective compaction policy (threshold = floor(min(contextWindow * ratio, budget - 65536))):');
+const declared = L.collectProfileModels({ home: option('home'), profile: option('profile'), installDir });
+if (declared.note !== undefined) console.log(`  note: ${declared.note}, showing sample routes`);
+else console.log(`  models from ${declared.file}`);
+for (const row of declared.missing) console.log(`  warning: ${row.label} ${row.reason}`);
 console.log(L.formatSpecTable([
   ['DSH default (0.8)', 0.8, 0.16],
   ['bundle default (0.4)', L.DEFAULT_THRESHOLD_RATIO, L.DEFAULT_RETAIN_RATIO],
   ['test value (0.001)', 0.001, 0.0005]
-]));
+], declared.models.length > 0 ? declared.models : L.FALLBACK_MODELS));
 
 if (failed > 0) {
   console.error(`\n${failed} check(s) failed`);

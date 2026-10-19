@@ -26,6 +26,15 @@ const home = L.resolveDshHome(option('home'));
 const file = join(home, '.env');
 const keys = new Set([L.THRESHOLD_ENV, L.RETAIN_ENV, L.THRESHOLD_ENV_ALIAS, L.RETAIN_ENV_ALIAS]);
 
+// Every route the profile declares, read from its own patch layer, so the table
+// covers all providers instead of a hardcoded sample.
+const declared = L.collectProfileModels({ home, profile: option('profile'), installDir: option('install') });
+if (declared.note !== undefined) console.log(`note: ${declared.note}`);
+else console.log(`models from ${declared.file}`);
+if (declared.missing.length > 0) {
+  for (const row of declared.missing) console.log(`warning: ${row.label} ${row.reason}`);
+}
+
 function show(current) {
   const threshold = current[L.THRESHOLD_ENV];
   const retain = current[L.RETAIN_ENV];
@@ -37,7 +46,7 @@ function show(current) {
     const t = Number(threshold);
     cases.push([`current (${threshold})`, t, retain === undefined ? Math.min(L.DEFAULT_RETAIN_RATIO, t / 2) : Number(retain)]);
   }
-  console.log(L.formatSpecTable(cases));
+  console.log(L.formatSpecTable(cases, declared.models.length > 0 ? declared.models : L.FALLBACK_MODELS));
 }
 
 const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
@@ -98,7 +107,7 @@ console.log(`  ${L.RETAIN_ENV}=${retain === undefined ? `(derived: ${Math.min(L.
 console.log('');
 console.log(L.formatSpecTable([[
   'current', threshold, retain === undefined ? Math.min(L.DEFAULT_RETAIN_RATIO, threshold / 2) : retain
-]]));
+]], declared.models.length > 0 ? declared.models : L.FALLBACK_MODELS));
 console.log('');
 console.log('this is read once at boot: restart the dsh that runs this profile to apply it.');
 console.log('(an environment variable exported in the launching shell wins over .env and needs no file edit)');
