@@ -166,6 +166,27 @@ provider/model 去问适配器要 `contextWindow`，然后算
 `compaction still above threshold after N attempts` 告警（被 pre-step 处理器兜住，不会中断对话，
 但很吵）。或者干脆让对话长大（让「对话消息」超过尾巴），再保持 `0.01`。
 
+### 第三关：摘要必须比被替换的内容小
+
+**触发成功不等于压缩成功。** 选定区间后摘要由模型生成，然后有一个硬性检查：摘要（含框架）的
+估算 token 必须**严格小于**被替换区间的 token，否则整个压缩被放弃：
+
+```
+compaction/start  {…}
+compaction/end    {error: "summary is not smaller than the shadowed content (780 estimated framed tokens >= 136)"}
+                                   ↑ 摘要                 ↑ 被替换区间
+```
+
+（[dsh-compaction-basic:600–601](/data3/zsy/node-v24.18.0-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-compaction-basic/lib/index.js#L600-L601)；失败只会打一条
+`step compaction failed: …; continuing the turn` 告警，对话继续，**surface 不变**。）
+
+所以尾巴调小并不是越小越好：尾巴太小 → 可压区间也小 → 摘要（框架开销约 800 token 起）比它还大 →
+被拒绝。要看到一次**成功**的压缩，可压区间要明显大于摘要——让「对话消息」长到几 K 之后再压，或者
+就等正常比例在真实会话里跑到 40 万（那时可压约 30 万，摘要几千，非常划算）。
+
+你可以在自己的会话日志里核对这三关：`compaction/start` / `compaction/end`（`error` 字段）、
+以及成功时的 `compaction (pressure): shadowed N surface nodes (seqs …, ~M tokens)`。
+
 ## 校验与升级
 
     node scripts/verify.mjs   # 生成物 == 生成器输出；等于上游 preset + 恰好一个注入属性；
