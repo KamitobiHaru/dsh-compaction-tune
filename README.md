@@ -163,9 +163,9 @@ content」而放弃本次压缩；好处是工具结果永远保持原样。
 就同步升一位。`sync.mjs` 是幂等的：连续跑两次，只有生成物真的变了才会动 `upstream.json` 的
 `generatedAt`，所以发布前可以用「跑两次 + `git diff --stat` 为空」自检。
 
-### `0.4.0` 追的是 DSH `0.2.1-rc.2`：其中一处必须跟
+### `0.5.0` 追的是 DSH `0.2.1-rc.2`，并新增「高性能精简」
 
-官方这一版改了 `standard` 预设十处，**必须跟的是 `persona`**：官方删掉了
+**必须跟的一处是 `persona`**：官方这一版改了 `standard` 预设十处，其中官方删掉了
 `suffix: Your working directory is {{cwd}}.`。DSH 0.2.1 起注册的 prompt 变量只剩 `model` 和
 `provider`，`{{cwd}}` 已经不是合法变量 —— 提示词组装时遇到未注册变量会直接抛
 `unknown prompt variable "{{cwd}}"`，该预设的每次请求都会失败。工作目录改由
@@ -176,8 +176,6 @@ content」而放弃本次压缩；好处是工具结果永远保持原样。
 `tool-subagent-claude-code`、`tool-ralph` 三行；`tool-subagent`（spawn）与 `tool-subagent-fork` 删掉
 `backgroundMode`（该选项在 0.2.1 已整个消失）；`plan-mode` 的提示段文本改写。这些都由 `sync.mjs`
 自动带进来，不用手改生成物。
-
-### `0.5.0` 新增「高性能精简」
 
 同一版 DSH 里，官方 `minimal` 预设也变了：**新增了 `tool-fs` 行**（`read: false, readImage: true,
 write: false, edit: false` —— 上游自己就有逐工具开关了）和 **`compaction` 组**（`compaction-basic` +
@@ -196,7 +194,7 @@ write: false, edit: false` —— 上游自己就有逐工具开关了）和 **`
 ## 已知限制
 
 - **副本会冻结**：覆写预设等于冻结那份插件清单，上游新增的工具/提示段要等 `sync` 重新生成才会进来。
-  `0.4.0` 已经把 0.2.1 新增的 `time-context`、`tool-schedule`、`tool-plugin-market` 带进来了；上游再变仍需 `sync`。
+  `0.5.0` 已经把 0.2.1 新增的 `time-context`、`tool-schedule`、`tool-plugin-market` 带进来了；上游再变仍需 `sync`。
 - **两个预设共用一套旋钮**：`HARNESS_COMPACTION_*` 改一处两张卡一起变。同一台机器只有一套压缩策略，
   预设只决定工具面。
 - **「高性能精简」不裁工具结果**：与官方 `minimal` 一致，不挂 `tool-result-pruner`。超长工具输出会整段
