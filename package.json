@@ -1,9 +1,9 @@
 {
   "name": "dsh-compaction-tune",
-  "version": "0.3.3",
+  "version": "0.5.0",
   "private": true,
   "license": "MIT",
-  "description": "DSH bundle: a copy of the shipped standard agent preset whose compaction threshold is tunable through environment variables.",
+  "description": "DSH bundle: tuned copies of the shipped standard and minimal agent presets whose compaction threshold is tunable through environment variables.",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

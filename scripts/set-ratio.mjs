@@ -4,6 +4,9 @@
  * DSH refuses `DSH_*` names in a `.env` file (bootstrap-only), so this script
  * uses the `HARNESS_COMPACTION_*` names the bundle reads first.
  *
+ * The two knobs apply to every tuned preset this bundle ships, so one machine
+ * has one compaction policy; a preset only decides which tools the agent sees.
+ *
  * Usage:
  *   node scripts/set-ratio.mjs 0.001                 # threshold only, retain derived
  *   node scripts/set-ratio.mjs 0.001 --retain 0.0005 # both knobs

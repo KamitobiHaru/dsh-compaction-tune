@@ -2,13 +2,16 @@
 /**
  * Prove three things before this bundle is installed or upgraded:
  *   1. `cordis.patch.yml` is exactly the generator's output for the installed
- *      shipped preset -- the tuned preset is upstream plus one injected config;
+ *      shipped presets -- each tuned preset is its source plus one injected
+ *      config;
  *   2. DSH's own dump/parse dialect round-trips the `!!js` markers;
  *   3. the injected expression yields the expected policy for a table of
  *      environment values and refuses invalid ones.
  * Finally it prints the resulting token thresholds for this profile's models.
  *
- * Usage: node scripts/verify.mjs [--install <dsh package dir>] [--from <standard.patch.yml>]
+ * Usage: node scripts/verify.mjs [--install <dsh package dir>]
+ *                                [--from-standard <standard.patch.yml>]
+ *                                [--from-minimal <minimal.patch.yml>]
  */
 import { isDeepStrictEqual } from 'node:util';
 import { join } from 'node:path';
@@ -22,8 +25,13 @@ const option = (name) => {
 const root = join(import.meta.dirname, '..');
 const installDir = L.resolveInstallDir(option('install'));
 const tools = L.loadDshTools(installDir);
-const source = L.resolvePresetSource(installDir, option('from'));
-const upstream = L.readEntryList(tools, source);
+const sources = L.resolvePresetSources(installDir, {
+  standard: option('from-standard'),
+  minimal: option('from-minimal')
+});
+const upstream = Object.fromEntries(
+  Object.entries(sources).map(([name, file]) => [name, L.readEntryList(tools, file)])
+);
 const written = L.readEntryList(tools, join(root, 'cordis.patch.yml'));
 
 let failed = 0;
@@ -63,48 +71,119 @@ function scrub(rows) {
   visit(copy);
   return copy;
 }
+/** The plugin rows of a declaration, including nested group configs. */
+function allRows(rows, found = []) {
+  for (const row of rows ?? []) {
+    found.push(row);
+    if (Array.isArray(row.config)) allRows(row.config, found);
+  }
+  return found;
+}
+/**
+ * The package a plugin spec belongs to. A spec may name a subpath export
+ * (`@scope/pkg/list-agents`), whose package is still the scope and the first
+ * segment.
+ */
+function packageOf(spec) {
+  const parts = spec.split('/');
+  return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
 
 console.log(`dsh ${L.dshVersion(installDir)}`);
-console.log(`upstream ${source}`);
+for (const name of L.SOURCE_PRESET_NAMES) console.log(`${name} ${sources[name]}`);
 console.log('');
 
 check('cordis.patch.yml is exactly what the generator produces', () => {
   assert(isDeepStrictEqual(normalize(written), normalize(L.buildPatchList(upstream))), 'the file differs from `node scripts/sync.mjs` output');
 });
-check('the shipped preset round-trips through the DSH dump/parse dialect', () => {
-  const again = tools.yaml.load(L.dumpEntryList(tools, upstream), { schema: tools.entryListSchema });
-  assert(isDeepStrictEqual(normalize(again), normalize(upstream)), 'a !!js marker or scalar was lost in the round trip');
+check('the shipped presets round-trip through the DSH dump/parse dialect', () => {
+  for (const name of L.SOURCE_PRESET_NAMES) {
+    const again = tools.yaml.load(L.dumpEntryList(tools, upstream[name]), { schema: tools.entryListSchema });
+    assert(isDeepStrictEqual(normalize(again), normalize(upstream[name])), `a !!js marker or scalar was lost in the ${name} round trip`);
+  }
 });
 
-const standard = L.findInsertedRow(upstream, L.UPSTREAM_PRESET_ROW_ID);
-const tuned = L.findInsertedRow(written, L.TUNED_PRESET_ROW_ID);
+check('the file carries one declaration row per tuned preset', () => {
+  const insert = written.filter((entry) => entry.insert !== undefined);
+  assert(insert.length === 1, `expected one insert patch, found ${insert.length}`);
+  const ids = insert[0].insert.map((row) => row.id);
+  const expected = L.TUNED_PRESETS.map((spec) => spec.rowId);
+  assert(isDeepStrictEqual(ids, expected), `inserted rows ${JSON.stringify(ids)} do not match ${JSON.stringify(expected)}`);
+});
 
-check('the tuned preset is the shipped preset plus only the injected compaction config', () => {
-  assert(isDeepStrictEqual(scrub(tuned.config.plugins), scrub(standard.config.plugins)), 'plugin rows differ beyond compaction-basic');
+for (const spec of L.TUNED_PRESETS) {
+  const source = L.findInsertedRow(upstream[spec.source], spec.sourceRowId);
+  const tuned = L.findInsertedRow(written, spec.rowId);
+
+  check(`${spec.id} is the shipped ${spec.source} preset plus only the injected compaction config`, () => {
+    assert(isDeepStrictEqual(scrub(tuned.config.plugins), scrub(source.config.plugins)), 'plugin rows differ beyond compaction-basic');
+  });
+  check(`${spec.id} changes only id/name/description/order`, () => {
+    const expected = structuredClone(source.config);
+    expected.id = spec.id;
+    expected.name = spec.name;
+    expected.description = spec.description;
+    expected.order = spec.order;
+    assert(isDeepStrictEqual(scrub([tuned.config])[0], scrub([expected])[0]), 'a field of the preset declaration differs from the generator');
+  });
+  check(`${spec.id} keeps the shipped ${spec.source} plugin list verbatim`, () => {
+    const wanted = allRows(source.config.plugins).map((row) => row.id);
+    const got = allRows(tuned.config.plugins).map((row) => row.id);
+    assert(isDeepStrictEqual(got, wanted), `plugin rows differ: ${JSON.stringify(got)} vs ${JSON.stringify(wanted)}`);
+  });
+  check(`${spec.id} declares its id, display name, description and order`, () => {
+    assert(tuned.name === L.PRESET_PLUGIN_NAME, `${tuned.id} mounts ${tuned.name}`);
+    assert(tuned.config?.id === spec.id, `${tuned.id} declares preset id ${JSON.stringify(tuned.config?.id)}`);
+    assert(tuned.config?.name === spec.name, `${tuned.id} declares name ${JSON.stringify(tuned.config?.name)}`);
+    assert(tuned.config?.description === spec.description, `${tuned.id} declares description ${JSON.stringify(tuned.config?.description)}`);
+    assert(tuned.config?.order === spec.order, `${tuned.id} declares order ${JSON.stringify(tuned.config?.order)}`);
+  });
+  check(`${spec.id} mounts no plugin outside the installed DSH`, () => {
+    for (const plugin of allRows(tuned.config.plugins)) {
+      const name = plugin.name;
+      if (name.startsWith('cordis:') || name.startsWith('.')) continue;
+      tools.require.resolve(`${packageOf(name)}/package.json`);
+    }
+  });
+
+  const compaction = L.findPlugin(tuned.config.plugins, L.COMPACTION_ROW_ID);
+  check(`${spec.id} carries exactly the expression scripts/lib.mjs declares`, () => {
+    const expression = compaction?.config?.__jsExpr;
+    assert(typeof expression === 'string' && expression.trim() === L.EXPRESSION.trim(), 'the expression in the file is not the one scripts/lib.mjs declares');
+  });
+}
+
+check('the compact preset keeps the shipped minimal compaction group as it is', () => {
+  // The `minimal` source ships no tool-result-pruner and no toolResultPruner
+  // isolation realm; the tuned copy must not add either.
+  const spec = L.TUNED_PRESETS.find((candidate) => candidate.source === 'minimal');
+  const tuned = L.findInsertedRow(written, spec.rowId);
+  const group = L.findPlugin(tuned.config.plugins, 'compaction');
+  assert(group !== undefined, 'the compact preset declares no compaction group');
+  assert(!Object.keys(group.isolate ?? {}).includes('toolResultPruner'), 'the compact preset isolates a toolResultPruner service it does not mount');
+  assert(
+    !allRows(group.config).some((row) => row.name === '@deepseek-ai/dsh-compaction-tool-result-pruner'),
+    'the compact preset mounts a tool-result-pruner the shipped minimal preset does not'
+  );
 });
-check('the tuned preset changes only id/name/description/order', () => {
-  const expected = structuredClone(standard.config);
-  expected.id = L.TUNED_PRESET_ID;
-  expected.name = L.PRESET_DISPLAY_NAME;
-  expected.description = L.PRESET_DESCRIPTION;
-  expected.order = L.PRESET_ORDER;
-  assert(isDeepStrictEqual(scrub([tuned.config])[0], scrub([expected])[0]), 'a field of the preset declaration differs from the generator');
-});
-check('the registry override selects the tuned preset and still supplies the required default', () => {
+
+check('the registry override selects the default preset and still supplies the required default', () => {
   const row = written.find((entry) => entry.id === L.REGISTRY_ROW_ID);
   assert(row !== undefined, 'the file carries no agent-preset-registry override');
-  assert(isDeepStrictEqual(row.config, { default: L.TUNED_PRESET_ID, selectedDefault: L.TUNED_PRESET_ID }), `unexpected registry config ${JSON.stringify(row.config)}`);
+  assert(
+    isDeepStrictEqual(row.config, { default: L.DEFAULT_TUNED_PRESET_ID, selectedDefault: L.DEFAULT_TUNED_PRESET_ID }),
+    `unexpected registry config ${JSON.stringify(row.config)}`
+  );
 });
 check('no other row is patched', () => {
   const ids = written.filter((entry) => entry.insert === undefined).map((entry) => entry.id);
   assert(ids.every((id) => id === L.REGISTRY_ROW_ID), `unexpected patch targets ${JSON.stringify(ids)}`);
 });
 
-const compaction = L.findPlugin(tuned.config.plugins, L.COMPACTION_ROW_ID);
-const expression = compaction?.config?.__jsExpr;
-check('compaction-basic carries exactly the expression scripts/lib.mjs declares', () => {
-  assert(typeof expression === 'string' && expression.trim() === L.EXPRESSION.trim(), 'the expression in the file is not the one scripts/lib.mjs declares');
-});
+const expression = L.findPlugin(
+  L.findInsertedRow(written, L.TUNED_PRESETS[0].rowId).config.plugins,
+  L.COMPACTION_ROW_ID
+)?.config?.__jsExpr;
 
 console.log('');
 console.log('environment knobs, evaluated through the Loader expression wrapper:');

@@ -12,21 +12,56 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-/** Loader row id of the preset this bundle adds. */
-export const TUNED_PRESET_ROW_ID = 'preset-high-performance';
-/** Loader row id of the shipped preset it derives from. */
-export const UPSTREAM_PRESET_ROW_ID = 'preset-standard';
-/** Preset id (inside the declaration) this bundle adds; sessions record this id. */
-export const TUNED_PRESET_ID = 'high-performance';
-/** Preset id of the shipped declaration. */
-export const UPSTREAM_PRESET_ID = 'standard';
 export const PRESET_PLUGIN_NAME = '@deepseek-ai/dsh-agent-preset';
 export const REGISTRY_ROW_ID = 'agent-preset-registry';
 export const COMPACTION_ROW_ID = 'compaction-basic';
-/** Shown by the preset picker (`config.name ?? config.id`). */
-export const PRESET_DISPLAY_NAME = '高性能';
-export const PRESET_DESCRIPTION = '采用更激进的压缩策略，使得准确性更高。';
-export const PRESET_ORDER = 1;
+
+/**
+ * The shipped presets this bundle derives from, by preset name.
+ *
+ * `standard` carries the full tool catalog; `minimal` carries the two-tool
+ * surface (a persistent shell and `read_image`) and a one-line system prompt.
+ */
+export const SOURCE_PRESET_NAMES = ['standard', 'minimal'];
+
+/**
+ * The tuned presets this bundle ships.
+ *
+ * Each one is a verbatim copy of a shipped preset whose `compaction-basic`
+ * row carries the `!!js` policy expression; every other row -- the persona,
+ * the tool rows, the compaction group's other members and its `isolate` map --
+ * is the shipped declaration's own text, so the copy differs from its source
+ * in exactly one place.
+ */
+export const TUNED_PRESETS = [
+  {
+    /** Preset id (inside the declaration); sessions record this id. */
+    id: 'high-performance',
+    /** Loader row id of the declaration row. */
+    rowId: 'preset-high-performance',
+    /** Name of the shipped preset this one copies. */
+    source: 'standard',
+    /** Loader row id of the shipped declaration. */
+    sourceRowId: 'preset-standard',
+    /** Shown by the preset picker (`config.name ?? config.id`). */
+    name: '高性能',
+    description: '采用更激进的压缩策略，使得准确性更高。',
+    /** Roster position. */
+    order: 1
+  },
+  {
+    id: 'high-performance-minimal',
+    rowId: 'preset-high-performance-minimal',
+    source: 'minimal',
+    sourceRowId: 'preset-minimal',
+    name: '高性能精简',
+    description: '官方 minimal 预设，加上可定制的压缩策略。',
+    order: 3
+  }
+];
+
+/** The tuned preset the profile default points at. */
+export const DEFAULT_TUNED_PRESET_ID = TUNED_PRESETS[0].id;
 
 export const THRESHOLD_ENV = 'HARNESS_COMPACTION_THRESHOLD_RATIO';
 export const RETAIN_ENV = 'HARNESS_COMPACTION_RETAIN_RATIO';
@@ -96,11 +131,22 @@ export function loadDshTools(installDir) {
   return { require, yaml, entryListSchema: include.entryListSchema, installDir };
 }
 
-/** The shipped `standard` preset patch file that this bundle is generated from. */
-export function resolvePresetSource(installDir, explicit) {
-  if (explicit !== undefined) return resolve(explicit);
+/**
+ * The shipped preset patch files this bundle is generated from, keyed by
+ * preset name. An explicit path overrides the shipped one for that preset.
+ * @param installDir - the dsh installation to read the shipped presets from.
+ * @param explicit - optional per-preset path overrides.
+ * @returns the patch file path of every source preset.
+ */
+export function resolvePresetSources(installDir, explicit = {}) {
   const require = createRequire(join(installDir, 'package.json'));
-  return join(dirname(require.resolve('@deepseek-ai/dsh-web-app/package.json')), 'presets', 'standard.patch.yml');
+  const dir = join(dirname(require.resolve('@deepseek-ai/dsh-web-app/package.json')), 'presets');
+  const sources = {};
+  for (const name of SOURCE_PRESET_NAMES) {
+    const override = explicit[name];
+    sources[name] = override !== undefined ? resolve(override) : join(dir, `${name}.patch.yml`);
+  }
+  return sources;
 }
 
 export function dshVersion(installDir) {
@@ -142,28 +188,42 @@ export function findPlugin(rows, rowId) {
 }
 
 /**
- * The complete patch list this bundle ships: the tuned preset declaration plus
- * the registry override that selects it. `sync.mjs` writes exactly this and
- * `verify.mjs` asserts the written file still equals it.
+ * The complete patch list this bundle ships: one tuned preset declaration per
+ * source preset, plus the registry override that selects the default one.
+ * `sync.mjs` writes exactly this and `verify.mjs` asserts the written file
+ * still equals it.
+ *
+ * Each tuned declaration is its source's plugin list verbatim, with the
+ * `compaction-basic` row's config replaced by the policy expression. Nothing
+ * else is added, removed, or rewritten -- in particular the `compact` preset
+ * keeps the shipped `minimal` compaction group as it is, so it mounts no
+ * `tool-result-pruner` and no `toolResultPruner` isolation realm.
+ * @param sources - the parsed entry list of every source preset, by name.
+ * @returns the patch list this bundle ships.
  */
-export function buildPatchList(upstream) {
-  const standard = findInsertedRow(upstream, UPSTREAM_PRESET_ROW_ID);
-  if (standard.config?.id !== UPSTREAM_PRESET_ID) {
-    throw new Error(`${UPSTREAM_PRESET_ROW_ID} no longer declares preset id ${JSON.stringify(UPSTREAM_PRESET_ID)}`);
-  }
-  const tuned = {
-    id: TUNED_PRESET_ID,
-    name: PRESET_DISPLAY_NAME,
-    description: PRESET_DESCRIPTION,
-    order: PRESET_ORDER,
-    plugins: structuredClone(standard.config.plugins)
-  };
-  const compaction = findPlugin(tuned.plugins, COMPACTION_ROW_ID);
-  if (compaction === undefined) throw new Error(`the shipped preset declares no ${COMPACTION_ROW_ID} plugin row`);
-  compaction.config = { __jsExpr: EXPRESSION };
+export function buildPatchList(sources) {
+  const rows = TUNED_PRESETS.map((spec) => {
+    const source = sources[spec.source];
+    if (source === undefined) throw new Error(`no source preset named ${JSON.stringify(spec.source)}`);
+    const upstream = findInsertedRow(source, spec.sourceRowId);
+    if (upstream.config?.id !== spec.source) {
+      throw new Error(`${spec.sourceRowId} no longer declares preset id ${JSON.stringify(spec.source)}`);
+    }
+    const tuned = {
+      id: spec.id,
+      name: spec.name,
+      description: spec.description,
+      order: spec.order,
+      plugins: structuredClone(upstream.config.plugins)
+    };
+    const compaction = findPlugin(tuned.plugins, COMPACTION_ROW_ID);
+    if (compaction === undefined) throw new Error(`the shipped ${spec.source} preset declares no ${COMPACTION_ROW_ID} plugin row`);
+    compaction.config = { __jsExpr: EXPRESSION };
+    return { id: spec.rowId, name: PRESET_PLUGIN_NAME, config: tuned };
+  });
   return [
-    { insert: [{ id: TUNED_PRESET_ROW_ID, name: PRESET_PLUGIN_NAME, config: tuned }] },
-    { id: REGISTRY_ROW_ID, config: { default: TUNED_PRESET_ID, selectedDefault: TUNED_PRESET_ID } }
+    { insert: rows },
+    { id: REGISTRY_ROW_ID, config: { default: DEFAULT_TUNED_PRESET_ID, selectedDefault: DEFAULT_TUNED_PRESET_ID } }
   ];
 }
 

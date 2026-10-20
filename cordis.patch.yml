@@ -1,18 +1,24 @@
 # dsh-compaction-tune - GENERATED FILE, do not hand-edit.
 #
-# Adds one @deepseek-ai/dsh-agent-preset row (`preset-high-performance`, preset id
-# `high-performance`): a verbatim copy of the shipped `standard` preset whose
-# `compaction-basic` row carries one `!!js` expression. That expression reads
+# Adds one @deepseek-ai/dsh-agent-preset row per source preset. Each row is a
+# verbatim copy of that shipped preset, with exactly one change: its
+# `compaction-basic` row carries one `!!js` expression.
+#   - `preset-high-performance` (preset id `high-performance`, shown as 「高性能」) -- copy of the shipped `standard` preset
+#   - `preset-high-performance-minimal` (preset id `high-performance-minimal`, shown as 「高性能精简」) -- copy of the shipped `minimal` preset
+#
+# That expression reads
 # HARNESS_COMPACTION_THRESHOLD_RATIO (or DSH_COMPACTION_THRESHOLD_RATIO) and
 # HARNESS_COMPACTION_RETAIN_RATIO (or DSH_COMPACTION_RETAIN_RATIO) at boot and returns the
 # compaction policy; the retained tail defaults to min(0.05, threshold / 2) so a
 # tiny threshold cannot trip compaction-basic's retainRatio < thresholdRatio check.
 #
-# The second patch selects that preset as the profile default.
+# The second patch selects the default preset as the profile default.
 #
 # source: @deepseek-ai/dsh-web-app/presets/standard.patch.yml
-# dsh:    0.2.0-rc.2
-# sha256: 6cd2f197737fc94a45e487d0bb57869461dd6f392d45f6429b576e75d973eda8
+#         @deepseek-ai/dsh-web-app/presets/minimal.patch.yml
+# dsh:    0.2.1-rc.2
+# sha256: 0d398d2a6872a73a106cb3bd19303ecccf1637e1fcad4d0bf9d8a72d2c2c68f5  (standard)
+#         a2a9ba1c9c392a45466708f18bc0aefbf300577f9b544dc06049f73a8a5b3267  (minimal)
 #
 # Regenerate with `node scripts/sync.mjs`; detect upstream drift with
 # `node scripts/check.mjs`; prove the result with `node scripts/verify.mjs`.
@@ -28,12 +34,13 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              suffix: Your working directory is {{cwd}}.
               prefix: You are a coding agent powered by the {{model}} model.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -48,6 +55,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -66,7 +75,7 @@
                 name: '@deepseek-ai/dsh-plan-mode'
                 config:
                   section: |
-                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
 
                     Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
 
@@ -123,41 +132,17 @@
                   provider: spawn
                   toolName: subagent
                   modelSelectionSettings: true
-                  backgroundMode: continuable
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
-                  backgroundMode: continuable
-              - id: tool-subagent-codex
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: codex
-                  toolName: subagent_codex
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
-              - id: tool-subagent-claude-code
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: claude-code
-                  toolName: subagent_claude_code
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
               - id: workflow-ptc
                 name: '@deepseek-ai/dsh-workflow-ptc'
                 config:
                   provider: spawn
               - id: tool-workflow
                 name: '@deepseek-ai/dsh-tool-workflow'
-              - id: tool-ralph
-                name: '@deepseek-ai/dsh-tool-ralph'
-                disabled: true
-                config:
-                  subagentProvider: spawn
-                  maxRounds: 64
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: tool-todo
@@ -174,6 +159,98 @@
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
             disabled: true
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
+            disabled: true
+    - id: preset-high-performance-minimal
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: high-performance-minimal
+        name: 高性能精简
+        description: 官方 minimal 预设，加上可定制的压缩策略。
+        order: 3
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are a helpful software engineer assistant.
+              complete: true
+              includeRuntimeContext: false
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: false
+              readImage: true
+              write: false
+              edit: false
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+                config: !!js |-
+                  (() => {
+                    const env = process.env;
+                    const thresholdRatio = Number(env.HARNESS_COMPACTION_THRESHOLD_RATIO ?? env.DSH_COMPACTION_THRESHOLD_RATIO ?? 0.4);
+                    const retainRatio = Number(env.HARNESS_COMPACTION_RETAIN_RATIO ?? env.DSH_COMPACTION_RETAIN_RATIO ?? Math.min(0.05, thresholdRatio / 2));
+                    if (!(thresholdRatio > 0 && thresholdRatio <= 1)) {
+                      throw new Error('compaction threshold ratio must be in (0, 1], got ' + thresholdRatio + '; set HARNESS_COMPACTION_THRESHOLD_RATIO');
+                    }
+                    if (!(retainRatio > 0 && retainRatio < thresholdRatio)) {
+                      throw new Error('compaction retain ratio must be in (0, ' + thresholdRatio + '), got ' + retainRatio + '; set HARNESS_COMPACTION_RETAIN_RATIO');
+                    }
+                    return { thresholdRatio, retainRatio };
+                  })()
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+          - id: persistent-shell
+            name: cordis:group
+            group: true
+            isolate:
+              terminals: true
+            config:
+              - id: pty
+                name: '@deepseek-ai/dsh-terminal'
+              - id: terminal-bash
+                name: '@deepseek-ai/dsh-terminal-bash'
+                disabled: !!js process.platform === 'win32'
+                config:
+                  timeoutMs: 300000
+              - id: persistent-bash
+                name: '@deepseek-ai/dsh-tool-bash-persistent'
+                disabled: !!js process.platform === 'win32'
+                config:
+                  timeoutMs: 300000
+                  description: |-
+                    Run commands in a bash shell
+                    * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+                    * Network access depends on the task environment. Prefer configured mirrors/proxies when they are available.
+                    * State is persistent across command calls and discussions with the user.
+                    * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+                    * Please avoid commands that may produce a very large amount of output.
+                    * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+              - id: terminal-pwsh
+                name: '@deepseek-ai/dsh-terminal-bash'
+                disabled: !!js process.platform !== 'win32'
+                config:
+                  shellDialect: pwsh
+                  timeoutMs: 300000
+              - id: persistent-pwsh
+                name: '@deepseek-ai/dsh-tool-pwsh-persistent'
+                disabled: !!js process.platform !== 'win32'
+                config:
+                  timeoutMs: 300000
+                  description: |-
+                    Run commands in a PowerShell shell
+                    * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+                    * You don't have access to the internet via this tool.
+                    * State is persistent across command calls and discussions with the user.
+                    * Use native Windows paths (C:\...) and $env:NAME variables; this is PowerShell, not bash.
+                    * Please avoid commands that may produce a very large amount of output.
+                    * Please run long lived commands in the background, e.g. 'Start-Job' or start a server with Start-Process.
 - id: agent-preset-registry
   config:
     default: high-performance
